@@ -11,6 +11,7 @@
 #include "nrf24l01.h"
 #include "sd_log.h"
 #include "usb_device.h"
+#include "usbd_hid.h"   /* USBD_HID_SendReport */
 
 extern USBD_HandleTypeDef hUsbDeviceFS;
 

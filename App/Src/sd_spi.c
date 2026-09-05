@@ -34,6 +34,7 @@ extern SPI_HandleTypeDef hspi1;
 /* 命令 */
 #define SD_CMD0   0x00
 #define SD_CMD8   0x08
+#define SD_CMD9   0x09
 #define SD_CMD17  0x11
 #define SD_CMD24  0x18
 #define SD_CMD55  0x37
@@ -341,5 +342,77 @@ uint8_t SD_WriteBlock(uint32_t block, const uint8_t *buf)
         return SD_ERR_TIMEOUT;
     }
     sd_cs_high();
+    return SD_ERR_NONE;
+}
+
+/* 读 CSD 寄存器（CMD9） */
+static uint8_t sd_read_csd(uint8_t csd[16])
+{
+    uint8_t b, r;
+
+    sd_cs_low();
+    r = sd_cmd(SD_CMD9, 0, 0x01);
+    if (r != SD_R1_READY)
+    {
+        sd_cs_high();
+        return SD_ERR_READ;
+    }
+    b = 0;
+    for (uint32_t t0 = HAL_GetTick(); ; )
+    {
+        b = sd_xfer(0xFF);
+        if (b == 0xFE)
+        {
+            break;
+        }
+        if ((HAL_GetTick() - t0) > 200)
+        {
+            sd_cs_high();
+            return SD_ERR_TIMEOUT;
+        }
+    }
+    for (uint8_t i = 0; i < 16; i++)
+    {
+        csd[i] = sd_xfer(0xFF);
+    }
+    (void)sd_xfer(0xFF);   /* CRC */
+    (void)sd_xfer(0xFF);
+    sd_cs_high();
+    return SD_ERR_NONE;
+}
+
+uint8_t SD_GetBlockCount(uint32_t *blocks)
+{
+    uint8_t csd[16];
+    uint8_t ver;
+
+    if (blocks == NULL)
+    {
+        return SD_ERR_READ;
+    }
+    if (sd_read_csd(csd) != SD_ERR_NONE)
+    {
+        return SD_ERR_READ;
+    }
+
+    ver = (uint8_t)(csd[0] >> 6);   /* CSD_STRUCTURE */
+    if (ver == 0)
+    {
+        /* SD v1：字节寻址 */
+        uint8_t read_bl_len = (uint8_t)(csd[5] & 0x0F);
+        uint16_t c_size = (uint16_t)(((csd[6] & 0x03) << 10) | (csd[7] << 2) | ((csd[8] & 0xC0) >> 6));
+        uint8_t c_size_mult = (uint8_t)(((csd[9] & 0x03) << 1) | ((csd[10] & 0x80) >> 7));
+        *blocks = ((uint32_t)c_size + 1U) << (c_size_mult + read_bl_len - 7U);
+    }
+    else if (ver == 1)
+    {
+        /* SDHC/SDXC：块地址 */
+        uint32_t c_size = ((uint32_t)(csd[7] & 0x3F) << 16) | ((uint32_t)csd[8] << 8) | csd[9];
+        *blocks = (c_size + 1U) << 10;
+    }
+    else
+    {
+        return SD_ERR_READ;
+    }
     return SD_ERR_NONE;
 }
