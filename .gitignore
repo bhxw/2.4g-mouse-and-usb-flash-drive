@@ -41,3 +41,4 @@ MicroSD*用户文档.pdf
 *.log
 _*.py
 out.csv
+build_cli.log
