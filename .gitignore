@@ -38,4 +38,4 @@ MicroSD*用户文档.pdf
 
 # ---- 临时文件 ----
 *.log
-_reorg_*.py
+_*.py
