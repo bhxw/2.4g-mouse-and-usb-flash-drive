@@ -6,12 +6,13 @@
   ******************************************************************************
   * @attention
   *
-  * Copyright (c) 2015 STMicroelectronics.
-  * All rights reserved.
+  * <h2><center>&copy; Copyright (c) 2015 STMicroelectronics.
+  * All rights reserved.</center></h2>
   *
-  * This software is licensed under terms that can be found in the LICENSE file
-  * in the root directory of this software component.
-  * If no LICENSE file comes with this software, it is provided AS-IS.
+  * This software component is licensed by ST under Ultimate Liberty license
+  * SLA0044, the "License"; You may not use this file except in compliance with
+  * the License. You may obtain a copy of the License at:
+  *                      www.st.com/SLA0044
   *
   ******************************************************************************
   */
@@ -70,10 +71,8 @@ extern "C" {
 #define SCSI_VERIFY12                               0xAFU
 #define SCSI_VERIFY16                               0x8FU
 
-#define SCSI_READ_FORMAT_CAPACITIES                 0x23U
-#define SCSI_RECEIVE_DIAGNOSTIC_RESULTS             0x1CU
 #define SCSI_SEND_DIAGNOSTIC                        0x1DU
-#define SCSI_REPORT_LUNS                            0xA0U
+#define SCSI_READ_FORMAT_CAPACITIES                 0x23U
 
 #define NO_SENSE                                    0U
 #define RECOVERED_ERROR                             1U
@@ -84,14 +83,15 @@ extern "C" {
 #define UNIT_ATTENTION                              6U
 #define DATA_PROTECT                                7U
 #define BLANK_CHECK                                 8U
-#define MSC_VENDOR_SPECIFIC                         9U
+#define VENDOR_SPECIFIC                             9U
 #define COPY_ABORTED                                10U
 #define ABORTED_COMMAND                             11U
 #define VOLUME_OVERFLOW                             13U
 #define MISCOMPARE                                  14U
 
+
 #define INVALID_CDB                                 0x20U
-#define INVALID_FIELD_IN_COMMAND                    0x24U
+#define INVALID_FIELED_IN_COMMAND                   0x24U
 #define PARAMETER_LIST_LENGTH_ERROR                 0x1AU
 #define INVALID_FIELD_IN_PARAMETER_LIST             0x26U
 #define ADDRESS_OUT_OF_RANGE                        0x21U
@@ -103,13 +103,20 @@ extern "C" {
 
 #define READ_FORMAT_CAPACITY_DATA_LEN               0x0CU
 #define READ_CAPACITY10_DATA_LEN                    0x08U
+#define MODE_SENSE10_DATA_LEN                       0x08U
+#define MODE_SENSE6_DATA_LEN                        0x04U
 #define REQUEST_SENSE_DATA_LEN                      0x12U
 #define STANDARD_INQUIRY_DATA_LEN                   0x24U
 #define BLKVFY                                      0x04U
 
-#define SCSI_MEDIUM_UNLOCKED                        0x00U
-#define SCSI_MEDIUM_LOCKED                          0x01U
-#define SCSI_MEDIUM_EJECTED                         0x02U
+extern  uint8_t Page00_Inquiry_Data[];
+extern  uint8_t Standard_Inquiry_Data[];
+extern  uint8_t Standard_Inquiry_Data2[];
+extern  uint8_t Mode_Sense6_data[];
+extern  uint8_t Mode_Sense10_data[];
+extern  uint8_t Scsi_Sense_Data[];
+extern  uint8_t ReadCapacity10_Data[];
+extern  uint8_t ReadFormatCapacity_Data [];
 /**
   * @}
   */
@@ -121,16 +128,16 @@ extern "C" {
 
 typedef struct _SENSE_ITEM
 {
-  uint8_t Skey;
+  char Skey;
   union
   {
     struct _ASCs
     {
-      uint8_t ASC;
-      uint8_t ASCQ;
+      char ASC;
+      char ASCQ;
     } b;
     uint8_t ASC;
-    uint8_t *pData;
+    char *pData;
   } w;
 } USBD_SCSI_SenseTypeDef;
 /**
@@ -178,6 +185,8 @@ void SCSI_SenseCode(USBD_HandleTypeDef *pdev, uint8_t lun, uint8_t sKey,
   */
 
 /**
-  * @}
-  */
+* @}
+*/
+
+/************************ (C) COPYRIGHT STMicroelectronics *****END OF FILE****/
 
