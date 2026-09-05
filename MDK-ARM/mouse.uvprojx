@@ -381,6 +381,26 @@
           <GroupName>App</GroupName>
           <Files>
             <File>
+              <FileName>rtos_api.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>..\App\Src\rtos_api.c</FilePath>
+            </File>
+            <File>
+              <FileName>rtos_api.h</FileName>
+              <FileType>5</FileType>
+              <FilePath>..\App\Inc\rtos_api.h</FilePath>
+            </File>
+            <File>
+              <FileName>app_main.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>..\App\Src\app_main.c</FilePath>
+            </File>
+            <File>
+              <FileName>app_main.h</FileName>
+              <FileType>5</FileType>
+              <FilePath>..\App\Inc\app_main.h</FilePath>
+            </File>
+            <File>
               <FileName>NRF24L01.c</FileName>
               <FileType>1</FileType>
               <FilePath>..\App\Src\NRF24L01.c</FilePath>
@@ -400,8 +420,6 @@
               <FileType>5</FileType>
               <FilePath>..\App\Inc\NRF_Demo.h</FilePath>
             </File>
-            
-            
             <File>
               <FileName>OLED.c</FileName>
               <FileType>1</FileType>
