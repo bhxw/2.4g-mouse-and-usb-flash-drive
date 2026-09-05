@@ -1,7 +1,9 @@
 /**
  * @file sd_log.c
  * @brief SD 日志任务：挂载 FAT32 → 消费队列中的 LogRecord → 批量写 DATA.LOG（追加）
- *        写满/超时 1s 落盘一次并 f_sync；写失败自动卸载重试。
+ *
+ * 单写者互斥：主机（U盘/MSC）正在读写 SD 时暂停本任务落盘（usb_storage_last_active_ms
+ * 距今 < USB_GATE_MS 视为占用），空闲后自动恢复；缓冲写满且被占用时丢弃新记录并计数。
  */
 #include "sd_log.h"
 
@@ -9,6 +11,7 @@
 #include "console.h"
 #include "ff.h"
 #include "log_format.h"
+#include "usb_storage.h"
 
 #include "main.h"       /* HAL_GetTick */
 
@@ -20,8 +23,14 @@
 #define LOG_FILE_NAME       "DATA.LOG"
 #define LOG_FLUSH_MS        1000
 #define LOG_MOUNT_RETRY_MS  2000
+#define USB_GATE_MS         1500
 
 static rtos_queue_handle_t s_log_q;
+
+static int usb_busy(void)
+{
+    return (HAL_GetTick() - usb_storage_last_active_ms()) < USB_GATE_MS;
+}
 
 void sd_log_write_packet(const MousePacket_t *p)
 {
@@ -40,7 +49,57 @@ void sd_log_write_packet(const MousePacket_t *p)
     r.gx = p->gx;
     r.gy = p->gy;
     r.gz = p->gz;
-    (void)rtos_queue_send(s_log_q, &r, 0);   /* 满则丢弃最旧策略的简化版：直接丢该条 */
+    (void)rtos_queue_send(s_log_q, &r, 0);   /* 队列满则丢弃 */
+}
+
+/* 落盘：成功返回 1；被 USB 占用返回 0 */
+static int log_flush(FIL *file, uint8_t *fbuf, unsigned int *bcnt,
+                     unsigned long *rec_total, unsigned long *drops)
+{
+    FRESULT fr;
+    UINT bw = 0;
+
+    if (*bcnt == 0)
+    {
+        return 1;
+    }
+    fr = f_write(file, fbuf, *bcnt, &bw);
+    if (fr != FR_OK || bw != *bcnt)
+    {
+        dbg_printf("[LOG] write fail fr=%d\r\n", (int)fr);
+        return -1;
+    }
+    (void)f_sync(file);
+    *bcnt = 0;
+    if (*drops > 0)
+    {
+        dbg_printf("[LOG] flushed rec=%lu dropped=%lu\r\n", *rec_total, *drops);
+        *drops = 0;
+    }
+    else
+    {
+        dbg_printf("[LOG] flushed rec=%lu\r\n", *rec_total);
+    }
+    return 1;
+}
+
+/* 尝试追加一条：缓冲满先尝试落盘；USB 占用导致无法落盘则丢弃该条 */
+static void log_append(FIL *file, uint8_t *fbuf, const LogRecord *r,
+                       unsigned int *bcnt, unsigned long *rec_total,
+                       unsigned long *drops)
+{
+    if (*bcnt + (unsigned int)sizeof(LogRecord) > 512U)
+    {
+        int rc = log_flush(file, fbuf, bcnt, rec_total, drops);
+        if (rc <= 0)
+        {
+            (*drops)++;
+            return;   /* 占用或写失败：丢当前条 */
+        }
+    }
+    memcpy(&fbuf[*bcnt], r, sizeof(LogRecord));
+    *bcnt += (unsigned int)sizeof(LogRecord);
+    (*rec_total)++;
 }
 
 static void log_task(void *param)
@@ -52,9 +111,9 @@ static void log_task(void *param)
 
     unsigned int bcnt = 0;
     unsigned long rec_total = 0;
+    unsigned long drops = 0;
     uint32_t last_flush = 0;
     FRESULT fr;
-    UINT bw;
 
     (void)param;
 
@@ -84,6 +143,7 @@ static void log_task(void *param)
         }
         bcnt = 0;
         rec_total = 0;
+        drops = 0;
         last_flush = HAL_GetTick();
         dbg_printf("[LOG] DATA.LOG open tick=%lu\r\n", (unsigned long)HAL_GetTick());
 
@@ -93,43 +153,32 @@ static void log_task(void *param)
             /* 非阻塞清空队列 */
             while (rtos_queue_recv(s_log_q, qbuf, 0) == 0)
             {
-                memcpy(&fbuf[bcnt], qbuf, sizeof(LogRecord));
-                bcnt += (unsigned int)sizeof(LogRecord);
-                rec_total++;
-                if (bcnt + sizeof(LogRecord) > sizeof(fbuf))
-                {
-                    break;   /* 先去落盘再继续收 */
-                }
+                log_append(&file, fbuf, (const LogRecord *)qbuf,
+                           &bcnt, &rec_total, &drops);
             }
 
-            if (bcnt >= sizeof(fbuf) ||
-                (bcnt > 0 && (HAL_GetTick() - last_flush) >= LOG_FLUSH_MS))
+            /* 可写且（满 或 超时）→ 落盘 */
+            if (bcnt > 0 && !usb_busy() &&
+                (bcnt >= 512U || (HAL_GetTick() - last_flush) >= LOG_FLUSH_MS))
             {
-                bw = 0;
-                fr = f_write(&file, fbuf, bcnt, &bw);
-                if (fr != FR_OK || bw != bcnt)
+                int rc = log_flush(&file, fbuf, &bcnt, &rec_total, &drops);
+                if (rc < 0)
                 {
-                    dbg_printf("[LOG] write fail fr=%d\r\n", (int)fr);
-                    break;
+                    break;   /* 写失败：重挂载 */
                 }
-                (void)f_sync(&file);
-                bcnt = 0;
                 last_flush = HAL_GetTick();
-                dbg_printf("[LOG] flushed rec=%lu tick=%lu\r\n", rec_total,
-                           (unsigned long)HAL_GetTick());
             }
 
-            /* 等待新数据（500ms 超时，兼顾心跳打印） */
+            /* 等待新数据（500ms 超时） */
             if (rtos_queue_recv(s_log_q, qbuf, 500) == 0)
             {
-                memcpy(&fbuf[bcnt], qbuf, sizeof(LogRecord));
-                bcnt += (unsigned int)sizeof(LogRecord);
-                rec_total++;
+                log_append(&file, fbuf, (const LogRecord *)qbuf,
+                           &bcnt, &rec_total, &drops);
                 continue;
             }
         }
 
-        /* --- 出错或卸载：关闭并重来 --- */
+        /* --- 出错：关闭并重来 --- */
         (void)f_close(&file);
         (void)f_mount(NULL, "", 0);
         dbg_printf("[LOG] closed, retry...\r\n");

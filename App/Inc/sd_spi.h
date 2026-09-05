@@ -18,4 +18,7 @@ uint8_t SD_Init(void);
 uint8_t SD_ReadBlock(uint32_t block, uint8_t *buf);
 uint8_t SD_WriteBlock(uint32_t block, const uint8_t *buf);
 
+/** 查询总扇区数（CSD 解析；SDHC 为块地址模式）。成功返回 0。 */
+uint8_t SD_GetBlockCount(uint32_t *blocks);
+
 #endif /* __SD_SPI_H */
