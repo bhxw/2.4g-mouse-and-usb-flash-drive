@@ -27,6 +27,7 @@
 
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
+#include "app_main.h"
 #include "nrf_demo.h"
 #include "nrf24l01.h"
 /* USER CODE END Includes */
@@ -103,27 +104,15 @@ int main(void)
   /* NRF_Demo_Init: NRF24L01 初始化/自检/RX_Mode(由 DEMO_ROLE 决定) + OLED 状态显示 */
   NRF_Demo_Init();
 
-  uint32_t nrf_last_time = HAL_GetTick();
-  MousePacket_t nrfrx_pack = {0};
-  int8_t mouseoutput[4] = {0, 0, 0, 0};
+  /* 启动 RTOS 应用任务（内部启动调度器，不返回） */
+  app_start();
   /* USER CODE END 2 */
 
   /* Infinite loop */
   /* USER CODE BEGIN WHILE */
   while (1)
   {
-    /* 10ms 轮询射频收包并上送 USB HID 鼠标报文 */
-    if (HAL_GetTick() - nrf_last_time >= 10)
-    {
-      nrf_last_time = HAL_GetTick();
-      if (NRF24L01_RxPacket((uint8_t *)&nrfrx_pack) == 0)
-      {
-        mouseoutput[0] = nrfrx_pack.buttons;
-        mouseoutput[1] = nrfrx_pack.x;
-        mouseoutput[2] = nrfrx_pack.y;
-        USBD_HID_SendReport(&hUsbDeviceFS, (uint8_t *)&mouseoutput, sizeof(mouseoutput));
-      }
-    }
+    /* 兜底：app_start() 正常不会返回 */
     /* USER CODE END WHILE */
 
     /* USER CODE BEGIN 3 */
