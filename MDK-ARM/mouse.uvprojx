@@ -336,7 +336,7 @@
               <MiscControls></MiscControls>
               <Define>USE_HAL_DRIVER,STM32F103xB</Define>
               <Undefine></Undefine>
-              <IncludePath>../Core/Inc;../USB_DEVICE/App;../USB_DEVICE/Target;../Drivers/STM32F1xx_HAL_Driver/Inc;../Drivers/STM32F1xx_HAL_Driver/Inc/Legacy;../Middlewares/ST/STM32_USB_Device_Library/Core/Inc;../Middlewares/ST/STM32_USB_Device_Library/Class/HID/Inc;../Drivers/CMSIS/Device/ST/STM32F1xx/Include;../Drivers/CMSIS/Include;../App/Inc;./freertos/inc;./freertos/portable</IncludePath>
+              <IncludePath>../Core/Inc;../USB_DEVICE/App;../USB_DEVICE/Target;../Drivers/STM32F1xx_HAL_Driver/Inc;../Drivers/STM32F1xx_HAL_Driver/Inc/Legacy;../Middlewares/ST/STM32_USB_Device_Library/Core/Inc;../Middlewares/ST/STM32_USB_Device_Library/Class/HID/Inc;../Drivers/CMSIS/Device/ST/STM32F1xx/Include;../Drivers/CMSIS/Include;../App/Inc;../Middlewares/Third_Party/FatFs/src;./freertos/inc;./freertos/portable</IncludePath>
             </VariousControls>
           </Cads>
           <Aads>
@@ -380,6 +380,36 @@
         <Group>
           <GroupName>App</GroupName>
           <Files>
+            <File>
+              <FileName>diskio.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>..\App\Src\diskio.c</FilePath>
+            </File>
+            <File>
+              <FileName>diskio.h</FileName>
+              <FileType>5</FileType>
+              <FilePath>..\App\Inc\diskio.h</FilePath>
+            </File>
+            <File>
+              <FileName>console.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>..\App\Src\console.c</FilePath>
+            </File>
+            <File>
+              <FileName>console.h</FileName>
+              <FileType>5</FileType>
+              <FilePath>..\App\Inc\console.h</FilePath>
+            </File>
+            <File>
+              <FileName>sd_probe.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>..\App\Src\sd_probe.c</FilePath>
+            </File>
+            <File>
+              <FileName>sd_probe.h</FileName>
+              <FileType>5</FileType>
+              <FilePath>..\App\Inc\sd_probe.h</FilePath>
+            </File>
             <File>
               <FileName>sd_spi.c</FileName>
               <FileType>1</FileType>
@@ -444,6 +474,16 @@
               <FileName>OLED_Font.h</FileName>
               <FileType>5</FileType>
               <FilePath>..\App\Inc\OLED_Font.h</FilePath>
+            </File>
+          </Files>
+        </Group>
+        <Group>
+          <GroupName>FatFs (Third Party)</GroupName>
+          <Files>
+            <File>
+              <FileName>ff.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>..\Middlewares\Third_Party\FatFs\src\ff.c</FilePath>
             </File>
           </Files>
         </Group>

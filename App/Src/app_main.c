@@ -9,6 +9,7 @@
 
 #include "nrf_demo.h"   /* MousePacket_t */
 #include "nrf24l01.h"
+#include "sd_probe.h"
 #include "usb_device.h"
 
 extern USBD_HandleTypeDef hUsbDeviceFS;
@@ -45,6 +46,9 @@ void app_start(void)
     /* 创建任务失败不阻塞后续：调度器启动时低优先级任务仍可运行 */
     (void)rtos_task_create("rf_rx", rf_rx_task, NULL,
                            RF_TASK_STACK_WORDS, RF_TASK_PRIORITY, &s_rf_task);
+
+    /* M2b：SD/FatFs 自检任务（无卡时每 3s 打印失败重试） */
+    sd_probe_start();
 
     rtos_scheduler_start();
 
