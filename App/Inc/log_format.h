@@ -20,6 +20,7 @@
  */
 #define LOG_MAGIC       0x4D52u
 
+#pragma pack(push, 1)
 typedef struct {
     uint16_t magic;
     uint32_t ts_ms;
@@ -30,6 +31,10 @@ typedef struct {
     int16_t  gx;
     int16_t  gy;
     int16_t  gz;
-} LogRecord;   /* 2+4+1+1+1+1+2*3 = 16 字节 */
+} LogRecord;   /* 2+4+1+1+1+1+2*3 = 16 字节（pack(1) 必须，否则 ARMCC 会插入 2 字节对齐填充） */
+#pragma pack(pop)
+
+/* 编译期断言：记录必须严格 16 字节，与 tools/parse_log.py 一致 */
+typedef char log_record_size_check[(sizeof(LogRecord) == 16) ? 1 : -1];
 
 #endif /* __LOG_FORMAT_H */
