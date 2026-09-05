@@ -26,7 +26,7 @@ __ALIGN_BEGIN static uint8_t s_cfg_fs[COMP_CFG_SIZ] __ALIGN_END =
     COMP_CFG_SIZ, 0x00,
     0x02,                       /* bNumInterfaces: HID + MSC */
     0x01, 0x00,                 /* bConfigurationValue / iConfiguration */
-    0xE0, 0x32,                 /* 总线供电 + 远程唤醒 / 100mA */
+    0xE0, 0xFA,                 /* 总线供电 + 远程唤醒 / 500mA */
 
     /* ---- 接口0: HID Mouse ---- */
     0x09, USB_DESC_TYPE_INTERFACE,

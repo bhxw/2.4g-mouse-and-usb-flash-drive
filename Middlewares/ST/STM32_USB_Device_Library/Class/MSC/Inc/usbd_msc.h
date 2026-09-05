@@ -109,6 +109,8 @@ extern USBD_ClassTypeDef  USBD_MSC;
 
 uint8_t  USBD_MSC_RegisterStorage(USBD_HandleTypeDef   *pdev,
                                   USBD_StorageTypeDef *fops);
+USBD_MSC_BOT_HandleTypeDef *usbd_msc_get_hmsc(void);
+USBD_StorageTypeDef        *usbd_msc_get_fops(void);
 /**
   * @}
   */

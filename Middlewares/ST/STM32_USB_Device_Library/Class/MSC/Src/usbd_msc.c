@@ -101,6 +101,12 @@ uint8_t  *USBD_MSC_GetDeviceQualifierDescriptor(uint16_t *length);
   */
 
 
+static USBD_MSC_BOT_HandleTypeDef *s_hmsc = NULL;
+static USBD_StorageTypeDef        *s_fops  = NULL;
+
+USBD_MSC_BOT_HandleTypeDef *usbd_msc_get_hmsc(void) { return s_hmsc; }
+USBD_StorageTypeDef        *usbd_msc_get_fops(void)  { return s_fops; }
+
 USBD_ClassTypeDef  USBD_MSC =
 {
   USBD_MSC_Init,
@@ -300,6 +306,7 @@ uint8_t USBD_MSC_Init(USBD_HandleTypeDef *pdev, uint8_t cfgidx)
     pdev->ep_in[MSC_EPIN_ADDR & 0xFU].is_used = 1U;
   }
   pdev->pClassData = USBD_malloc(sizeof(USBD_MSC_BOT_HandleTypeDef));
+  s_hmsc = (USBD_MSC_BOT_HandleTypeDef *)pdev->pClassData;
 
   if (pdev->pClassData == NULL)
   {
@@ -351,7 +358,7 @@ uint8_t USBD_MSC_DeInit(USBD_HandleTypeDef *pdev,
 */
 uint8_t USBD_MSC_Setup(USBD_HandleTypeDef *pdev, USBD_SetupReqTypedef *req)
 {
-  USBD_MSC_BOT_HandleTypeDef *hmsc = (USBD_MSC_BOT_HandleTypeDef *) pdev->pClassData;
+  USBD_MSC_BOT_HandleTypeDef *hmsc = usbd_msc_get_hmsc();
   uint8_t ret = USBD_OK;
   uint16_t status_info = 0U;
 
@@ -365,7 +372,7 @@ uint8_t USBD_MSC_Setup(USBD_HandleTypeDef *pdev, USBD_SetupReqTypedef *req)
           if ((req->wValue  == 0U) && (req->wLength == 1U) &&
               ((req->bmRequest & 0x80U) == 0x80U))
           {
-            hmsc->max_lun = (uint32_t)((USBD_StorageTypeDef *)pdev->pUserData)->GetMaxLun();
+            hmsc->max_lun = (uint32_t)(usbd_msc_get_fops())->GetMaxLun();
             USBD_CtlSendData(pdev, (uint8_t *)(void *)&hmsc->max_lun, 1U);
           }
           else
@@ -586,6 +593,7 @@ uint8_t USBD_MSC_RegisterStorage(USBD_HandleTypeDef *pdev,
   if (fops != NULL)
   {
     pdev->pUserData = fops;
+  s_fops = fops;
   }
 
   return USBD_OK;
