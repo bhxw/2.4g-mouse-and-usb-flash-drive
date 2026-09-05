@@ -386,11 +386,6 @@
               <FilePath>..\App\Src\diskio.c</FilePath>
             </File>
             <File>
-              <FileName>diskio.h</FileName>
-              <FileType>5</FileType>
-              <FilePath>..\App\Inc\diskio.h</FilePath>
-            </File>
-            <File>
               <FileName>console.c</FileName>
               <FileType>1</FileType>
               <FilePath>..\App\Src\console.c</FilePath>
