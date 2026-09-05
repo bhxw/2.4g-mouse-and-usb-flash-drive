@@ -172,7 +172,7 @@ void DebugMon_Handler(void)
 void SysTick_Handler(void)
 {
   /* USER CODE BEGIN SysTick_IRQn 0 */
-	HAL_IncTick();
+  /* HAL tick 单源：仅此处递增一次（不再由 TIM2/重复调用叠加） */
   /* USER CODE END SysTick_IRQn 0 */
   HAL_IncTick();
   /* USER CODE BEGIN SysTick_IRQn 1 */
