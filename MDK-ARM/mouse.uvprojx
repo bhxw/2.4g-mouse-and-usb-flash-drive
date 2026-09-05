@@ -381,6 +381,16 @@
           <GroupName>App</GroupName>
           <Files>
             <File>
+              <FileName>sd_spi.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>..\App\Src\sd_spi.c</FilePath>
+            </File>
+            <File>
+              <FileName>sd_spi.h</FileName>
+              <FileType>5</FileType>
+              <FilePath>..\App\Inc\sd_spi.h</FilePath>
+            </File>
+            <File>
               <FileName>rtos_api.c</FileName>
               <FileType>1</FileType>
               <FilePath>..\App\Src\rtos_api.c</FilePath>
