@@ -53,9 +53,9 @@ TX 发射端(MPU6050+nRF24L01)  --2.4G-->  RX 本仓库(nRF24L01) --> USB HID �
 
 | 里程碑 | 内容 | 状态 |
 |---|---|---|
-| M0 | 时间基准单源化+主循环重构 ✅(m0a)；SPI1(PA5-7)+DMA、TIM3=1ms、删 TIM2/I2C1/MPU6050（CubeMX 侧完成） | 待 Keil 编译验收后打 tag |
-| M1 | FreeRTOS 任务化骨架 + rtos 抽象层 | 待开始 |
-| M2 | SD(SPI1+DMA) + FatFs 日志 | 待开始 |
+| M0 | 时间基准单源化 + 外设重构 + 清理 | ✅ tag m0a/m0b |
+| M1 | FreeRTOS 任务化骨架 + rtos 抽象层 | ✅ tag m1 |
+| M2 | SD(SPI1) 驱动 + FatFs 日志链路(DATA.LOG) | ✅ tag m2a/m2b/m2（待硬件实测） |
 | M3 | USB MSC+HID 复合（A 内联 → B 任务化） | 待开始 |
 | M4 | 可靠性收尾（看门狗/24h/功耗） | 待开始 |
 | M5 | 自研微内核替换（可选） | 待开始 |
