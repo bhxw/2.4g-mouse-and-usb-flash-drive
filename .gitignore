@@ -1,0 +1,41 @@
+# ---- Keil MDK-ARM 构建产物 ----
+*.o
+*.d
+*.crf
+*.axf
+*.map
+*.lnp
+*.htm
+*.lst
+*.sct
+*.dep
+*.bak
+*.iex
+*.hex
+MDK-ARM/mouse/
+MDK-ARM/EventRecorderStub.scvd
+
+# ---- Keil 个人/生成配置 ----
+*.uvguix.*
+*.uvoptx
+MDK-ARM/DebugConfig/
+MDK-ARM/RTE/
+
+# ---- CubeMX 生成/缓存 ----
+.mxproject
+
+# ---- IDE / 工具本地配置 ----
+.vscode/
+.claude/
+
+# ---- 本地参考资料与个人文档（不入库） ----
+参考历程/
+*.rar
+简历.*
+*简历*.docx
+STM32F103C8T6引脚定义.xlsx
+MicroSD*用户文档.pdf
+
+# ---- 临时文件 ----
+*.log
+_reorg_*.py
