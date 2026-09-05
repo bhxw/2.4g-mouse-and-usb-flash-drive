@@ -2,7 +2,7 @@
 /**
   ******************************************************************************
   * @file           : main.c
-  * @brief          : Main program body
+  * @brief          : Main program body (RX 接收端)
   ******************************************************************************
   * @attention
   *
@@ -27,9 +27,6 @@
 
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
-#include "freertostask.h"
-#include "mpu6050.h"
-#include "oled.h"
 #include "nrf_demo.h"
 #include "nrf24l01.h"
 /* USER CODE END Includes */
@@ -46,7 +43,8 @@
 
 /* Private macro -------------------------------------------------------------*/
 /* USER CODE BEGIN PM */
-uint32_t g_ulRunTimeCounter=0;
+/* FreeRTOS 运行时间统计计数：由 TIM3 溢出中断递增（周期 M0b 调整为 1ms） */
+uint32_t g_ulRunTimeCounter = 0;
 /* USER CODE END PM */
 
 /* Private variables ---------------------------------------------------------*/
@@ -63,10 +61,7 @@ void SystemClock_Config(void);
 
 /* Private user code ---------------------------------------------------------*/
 /* USER CODE BEGIN 0 */
-
-
 extern USBD_HandleTypeDef hUsbDeviceFS;
-
 /* USER CODE END 0 */
 
 /**
@@ -99,61 +94,38 @@ int main(void)
   /* Initialize all configured peripherals */
   MX_GPIO_Init();
   MX_USB_DEVICE_Init();
-  MX_TIM2_Init();
   MX_I2C1_Init();
   MX_USART1_UART_Init();
   MX_TIM3_Init();
   MX_I2C2_Init();
   MX_SPI2_Init();
   /* USER CODE BEGIN 2 */
-	HAL_TIM_Base_Start_IT(&htim2);
-	//HAL_TIM_Base_Start_IT(&htim3);
-	HAL_Delay(500);
-  MPU6050_Init();
-	HAL_Delay(500);
-	//OLED_Init();
-	NRF_Demo_Init();
-	
-	uint32_t nrf_last_time=0;
-	uint32_t sd_last_time=0;
-	MousePacket_t nrfrx_pack;
-	int8_t mouseoutput[4]={0,0,0,0};
-	
-	
-	nrf_last_time=HAL_GetTick();
-	sd_last_time=HAL_GetTick();
-	while(1){
-		
-		if(HAL_GetTick()-nrf_last_time>=10){
-			if(NRF24L01_RxPacket((uint8_t*)&nrfrx_pack)==0){
-				mouseoutput[0]=nrfrx_pack.buttons;
-				mouseoutput[1]=nrfrx_pack.x;
-				mouseoutput[2]=nrfrx_pack.y;
-				USBD_HID_SendReport(&hUsbDeviceFS,(uint8_t*)&mouseoutput,sizeof(mouseoutput));
-			}
-			nrf_last_time=HAL_GetTick();
-		}
-	}
-  
-	
-	
+  /* NRF_Demo_Init: NRF24L01 初始化/自检/RX_Mode(由 DEMO_ROLE 决定) + OLED 状态显示 */
+  NRF_Demo_Init();
 
-	
-	
-	//freertos_task_start();
-	
-
+  uint32_t nrf_last_time = HAL_GetTick();
+  MousePacket_t nrfrx_pack = {0};
+  int8_t mouseoutput[4] = {0, 0, 0, 0};
   /* USER CODE END 2 */
 
   /* Infinite loop */
   /* USER CODE BEGIN WHILE */
   while (1)
   {
-		
-		
-    //NRF_Demo_Run();			
+    /* 10ms 轮询射频收包并上送 USB HID 鼠标报文 */
+    if (HAL_GetTick() - nrf_last_time >= 10)
+    {
+      nrf_last_time = HAL_GetTick();
+      if (NRF24L01_RxPacket((uint8_t *)&nrfrx_pack) == 0)
+      {
+        mouseoutput[0] = nrfrx_pack.buttons;
+        mouseoutput[1] = nrfrx_pack.x;
+        mouseoutput[2] = nrfrx_pack.y;
+        USBD_HID_SendReport(&hUsbDeviceFS, (uint8_t *)&mouseoutput, sizeof(mouseoutput));
+      }
+    }
     /* USER CODE END WHILE */
-		
+
     /* USER CODE BEGIN 3 */
   }
   /* USER CODE END 3 */
@@ -206,38 +178,18 @@ void SystemClock_Config(void)
 }
 
 /* USER CODE BEGIN 4 */
+/**
+  * @brief TIM 溢出中断回调
+  *        仅保留 TIM3：FreeRTOS 运行时间统计计数源（1ms 周期，M0b 调整 TIM3 周期后生效）
+  *        HAL tick 只由 SysTick 驱动（单源），不再经由 TIM2
+  */
 void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
 {
-    if(htim->Instance==TIM2){
-			 HAL_IncTick();
-		}
-		if(htim->Instance==TIM3){
-			 g_ulRunTimeCounter++;
-		}
-			
+  if (htim->Instance == TIM3)
+  {
+    g_ulRunTimeCounter++;
+  }
 }
-
-
-
-
-
-/* USER CODE BEGIN 4 */
-/*void vApplicationStackOverflowHook( TaskHandle_t xTask, char *pcTaskName )
-{
-
-    ( void ) xTask;
-    ( void ) pcTaskName;
-    
-
-    while( 1 )
-    {
-
-    }
-}*/
-
-
-
-
 /* USER CODE END 4 */
 
 /**
@@ -259,7 +211,7 @@ void Error_Handler(void)
   * @brief  Reports the name of the source file and the source line number
   *         where the assert_param error has occurred.
   * @param  file: pointer to the source file name
-  * @param  line: assert_param error line source number
+  * @param  line: assert_param error line number source
   * @retval None
   */
 void assert_failed(uint8_t *file, uint32_t line)
