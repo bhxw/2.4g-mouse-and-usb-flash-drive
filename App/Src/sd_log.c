@@ -120,6 +120,9 @@ static void log_task(void *param)
 
     (void)param;
 
+    /* 上电错峰：先让 USB 枚举稳定，再碰 SD（避免开机即写卡导致电流尖峰/枚举失败） */
+    rtos_delay(3000);
+
     for (;;)
     {
         /* --- 未挂载：尝试挂载并打开文件（追加模式） --- */
