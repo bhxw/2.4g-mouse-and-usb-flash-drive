@@ -6,12 +6,13 @@
   ******************************************************************************
   * @attention
   *
-  * Copyright (c) 2015 STMicroelectronics.
-  * All rights reserved.
+  * <h2><center>&copy; Copyright (c) 2015 STMicroelectronics.
+  * All rights reserved.</center></h2>
   *
-  * This software is licensed under terms that can be found in the LICENSE file
-  * in the root directory of this software component.
-  * If no LICENSE file comes with this software, it is provided AS-IS.
+  * This software component is licensed by ST under Ultimate Liberty license
+  * SLA0044, the "License"; You may not use this file except in compliance with
+  * the License. You may obtain a copy of the License at:
+  *                      www.st.com/SLA0044
   *
   ******************************************************************************
   */
@@ -39,13 +40,10 @@ extern "C" {
 /** @defgroup USB_INFO_Exported_Defines
   * @{
   */
-#define MODE_SENSE6_LEN                    0x04U
-#define MODE_SENSE10_LEN                   0x08U
-#define LENGTH_INQUIRY_PAGE00              0x06U
-#define LENGTH_INQUIRY_PAGE80              0x08U
-#define LENGTH_FORMAT_CAPACITIES           0x14U
-#define DIAGNOSTIC_DATA_LEN                0x08U
-#define LOG_PAGE_DATA_LEN                  0x10U
+#define MODE_SENSE6_LEN                    8U
+#define MODE_SENSE10_LEN                   8U
+#define LENGTH_INQUIRY_PAGE00              7U
+#define LENGTH_FORMAT_CAPACITIES           20U
 
 /**
   * @}
@@ -72,12 +70,9 @@ extern "C" {
 /** @defgroup USBD_INFO_Exported_Variables
   * @{
   */
-extern uint8_t MSC_Page00_Inquiry_Data[LENGTH_INQUIRY_PAGE00];
-extern uint8_t MSC_Page80_Inquiry_Data[LENGTH_INQUIRY_PAGE80];
-extern uint8_t MSC_Mode_Sense6_data[MODE_SENSE6_LEN];
-extern uint8_t MSC_Mode_Sense10_data[MODE_SENSE10_LEN];
-extern uint8_t MSC_Diagnostic_Data[DIAGNOSTIC_DATA_LEN];
-extern uint8_t MSC_Log_Page_Data[LOG_PAGE_DATA_LEN];
+extern const uint8_t MSC_Page00_Inquiry_Data[];
+extern const uint8_t MSC_Mode_Sense6_data[];
+extern const uint8_t MSC_Mode_Sense10_data[] ;
 
 /**
   * @}
@@ -102,5 +97,7 @@ extern uint8_t MSC_Log_Page_Data[LOG_PAGE_DATA_LEN];
   */
 
 /**
-  * @}
-  */
+* @}
+*/
+
+/************************ (C) COPYRIGHT STMicroelectronics *****END OF FILE****/
