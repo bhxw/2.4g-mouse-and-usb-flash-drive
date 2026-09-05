@@ -31,7 +31,7 @@ static void sd_probe_entry(void *param)
         fr = f_mount(&fs, "", 1);
         if (fr != FR_OK)
         {
-            dbg_printf("[SD] mount fail fr=%d (check wiring/FAT32)\r\n", (int)fr);
+            dbg_printf("[SD] mount fail fr=%d (wiring/FAT32?)\r\n", (int)fr);
             rtos_delay(PROBE_RETRY_MS);
             continue;
         }
@@ -64,7 +64,7 @@ static void sd_probe_entry(void *param)
 
         if (fr == FR_OK && !mismatch)
         {
-            dbg_printf("[SD] TEST OK : 挂载+写/读校验通过 (512B)\r\n");
+            dbg_printf("[SD] TEST OK : mount + write/read verify OK (512B)\r\n");
         }
         else
         {
