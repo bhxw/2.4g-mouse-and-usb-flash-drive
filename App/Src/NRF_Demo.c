@@ -103,15 +103,26 @@ static void Demo_RX_Run(void)
 /* ============================ 对外接口 ============================ */
 void NRF_Demo_Init(void)
 {
+	uint8_t i;
+
 	OLED_Init();
 	NRF24L01_Init();
 
-	/* 检测 NRF24L01 是否存在(SPI 通信是否正常) */
-	if (NRF24L01_Check() != 0)
+	/* 冷启动容错：等模块上电稳定并重试，避免首次上电误报 NRF ERR! */
+	HAL_Delay(300);
+	for (i = 0; i < 3; i++)
+	{
+		if (NRF24L01_Check() == 0)
+		{
+			break;
+		}
+		HAL_Delay(200);
+	}
+	if (i >= 3)	/* 模块异常, 停在错误界面 */
 	{
 		OLED_ShowString(1, 1, "NRF ERR!    ");
 		OLED_ShowString(2, 1, "CHECK WIRE  ");
-		while (1);	/* 模块异常, 停在错误界面 */
+		while (1);
 	}
 
 	/* 固定显示布局(第2~4行, 与 OLED_Show_Packet 位置一致) */

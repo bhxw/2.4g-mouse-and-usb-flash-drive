@@ -85,7 +85,7 @@ static void log_task(void *param)
         bcnt = 0;
         rec_total = 0;
         last_flush = HAL_GetTick();
-        dbg_printf("[LOG] DATA.LOG open (append)\r\n");
+        dbg_printf("[LOG] DATA.LOG open tick=%lu\r\n", (unsigned long)HAL_GetTick());
 
         /* --- 挂载成功：消费队列并批量写盘 --- */
         while (1)
@@ -115,7 +115,8 @@ static void log_task(void *param)
                 (void)f_sync(&file);
                 bcnt = 0;
                 last_flush = HAL_GetTick();
-                dbg_printf("[LOG] flushed rec_total=%lu\r\n", rec_total);
+                dbg_printf("[LOG] flushed rec=%lu tick=%lu\r\n", rec_total,
+                           (unsigned long)HAL_GetTick());
             }
 
             /* 等待新数据（500ms 超时，兼顾心跳打印） */
