@@ -58,19 +58,19 @@
 
 /* ================= NRF24L01 控制引脚(按实际接线修改) =================
  * 例程原始定义: CE=PA4, CSN=PC4, IRQ=PC5
- * 本项目默认:
+ * 本项目（M0 后定版，2026-09-05）:
  *   CE  = PB0   (推挽输出)
  *   CSN = PB1   (推挽输出, 低有效)
- *   IRQ = PA8   (输入上拉, NRF IRQ 为低有效开漏输出)
- * 注: PB5 原为 IRQ, 已让给 SPI1_MOSI(SD 卡, 见 M0b); 需硬件按 PA8 接线.
+ *   IRQ = PB5   (输入上拉, NRF IRQ 为低有效开漏输出)
+ * 注: SD 卡走 SPI1 默认映射(PA5/6/7)，未占用 PB5，故 IRQ 保留 PB5.
  * 若你的硬件接法不同, 只需修改下面三组宏即可.
  */
 #define NRF24L01_CE_PORT   GPIOB
 #define NRF24L01_CE_PIN    GPIO_PIN_0
 #define NRF24L01_CSN_PORT  GPIOB
 #define NRF24L01_CSN_PIN   GPIO_PIN_1
-#define NRF24L01_IRQ_PORT  GPIOA
-#define NRF24L01_IRQ_PIN   GPIO_PIN_8
+#define NRF24L01_IRQ_PORT  GPIOB
+#define NRF24L01_IRQ_PIN   GPIO_PIN_5
 
 #define NRF24L01_CE_HIGH()  HAL_GPIO_WritePin(NRF24L01_CE_PORT, NRF24L01_CE_PIN, GPIO_PIN_SET)
 #define NRF24L01_CE_LOW()   HAL_GPIO_WritePin(NRF24L01_CE_PORT, NRF24L01_CE_PIN, GPIO_PIN_RESET)

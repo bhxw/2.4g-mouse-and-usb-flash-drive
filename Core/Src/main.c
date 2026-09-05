@@ -18,7 +18,7 @@
 /* USER CODE END Header */
 /* Includes ------------------------------------------------------------------*/
 #include "main.h"
-#include "i2c.h"
+#include "dma.h"
 #include "spi.h"
 #include "tim.h"
 #include "usart.h"
@@ -93,12 +93,12 @@ int main(void)
 
   /* Initialize all configured peripherals */
   MX_GPIO_Init();
+  MX_DMA_Init();
   MX_USB_DEVICE_Init();
-  MX_I2C1_Init();
   MX_USART1_UART_Init();
   MX_TIM3_Init();
-  MX_I2C2_Init();
   MX_SPI2_Init();
+  MX_SPI1_Init();
   /* USER CODE BEGIN 2 */
   /* NRF_Demo_Init: NRF24L01 初始化/自检/RX_Mode(由 DEMO_ROLE 决定) + OLED 状态显示 */
   NRF_Demo_Init();
@@ -180,7 +180,7 @@ void SystemClock_Config(void)
 /* USER CODE BEGIN 4 */
 /**
   * @brief TIM 溢出中断回调
-  *        仅保留 TIM3：FreeRTOS 运行时间统计计数源（1ms 周期，M0b 调整 TIM3 周期后生效）
+  *        仅保留 TIM3：FreeRTOS 运行时间统计计数源（TIM3 已配置为 1ms）
   *        HAL tick 只由 SysTick 驱动（单源），不再经由 TIM2
   */
 void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
@@ -189,6 +189,12 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
   {
     g_ulRunTimeCounter++;
   }
+}
+
+/* FreeRTOS 运行时间统计取值（configGENERATE_RUN_TIME_STATS=1，mydebug=1） */
+unsigned long ulGetRunTimeCounterValue(void)
+{
+  return g_ulRunTimeCounter;
 }
 /* USER CODE END 4 */
 
@@ -211,7 +217,7 @@ void Error_Handler(void)
   * @brief  Reports the name of the source file and the source line number
   *         where the assert_param error has occurred.
   * @param  file: pointer to the source file name
-  * @param  line: assert_param error line number source
+  * @param  line: assert_param error line source number
   * @retval None
   */
 void assert_failed(uint8_t *file, uint32_t line)

@@ -19,8 +19,8 @@ TX 发射端(MPU6050+nRF24L01)  --2.4G-->  RX 本仓库(nRF24L01) --> USB HID �
 
 ```
 ├── App/                  ★ 应用层（用户代码，原 MDK-ARM/user 迁出）
-│   ├── Src/               NRF24L01 / NRF_Demo / freertostask / MPU6050 / OLED 源文件
-│   └── Inc/              对应头文件
+│   ├── Src/               NRF24L01 / NRF_Demo / OLED 源文件
+│   └── Inc/              对应头文件（NRF24L01/NRF_Demo/OLED）
 ├── Core/                 CubeMX 内核（main、中断、外设初始化）
 ├── Drivers/              CMSIS + STM32F1xx HAL
 ├── Middlewares/          ST USB 设备库（HID 类）
@@ -37,8 +37,8 @@ TX 发射端(MPU6050+nRF24L01)  --2.4G-->  RX 本仓库(nRF24L01) --> USB HID �
 
 - MCU：STM32F103C8T6（72MHz / 64KB Flash / 20KB RAM），HSE 8MHz，SWD 调试
 - USB：PA11/PA12（FS 设备）
-- nRF24L01：SPI2 = PB13/14/15，CE=PB0，CSN=PB1，IRQ=PB5（规划迁 PA8）
-- SD（规划）：SPI1 重映射 PB3/4/5 + CS=PB12（需 AFIO NOJTAG），模块 VCC=5V
+- nRF24L01：SPI2 = PB13/14/15，CE=PB0，CSN=PB1，IRQ=PB5
+- SD（规划）：SPI1 默认映射 PA5/6/7 + CS=PB12，模块 VCC=5V
 - OLED：PB10/11 软件 I2C；UART1（PA9/10）printf 调试
 - 详细引脚/变更见 `接收端开发方案.md` §1
 
@@ -53,7 +53,7 @@ TX 发射端(MPU6050+nRF24L01)  --2.4G-->  RX 本仓库(nRF24L01) --> USB HID �
 
 | 里程碑 | 内容 | 状态 |
 |---|---|---|
-| M0 | 引脚重构（SPI1+NOJTAG、nRF IRQ→PA8、SD CS=PB12）+ 时间基准修正 + 死代码清理 | 待开始 |
+| M0 | 时间基准单源化+主循环重构 ✅(m0a)；SPI1(PA5-7)+DMA、TIM3=1ms、删 TIM2/I2C1/MPU6050（CubeMX 侧完成） | 待 Keil 编译验收后打 tag |
 | M1 | FreeRTOS 任务化骨架 + rtos 抽象层 | 待开始 |
 | M2 | SD(SPI1+DMA) + FatFs 日志 | 待开始 |
 | M3 | USB MSC+HID 复合（A 内联 → B 任务化） | 待开始 |
