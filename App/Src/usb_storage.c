@@ -12,6 +12,9 @@
 #include <string.h>
 
 static volatile uint32_t s_last_active_ms = 0;
+static uint32_t s_cap_blocks = 0;
+static uint16_t s_cap_size = 0;
+static uint8_t  s_cap_ok = 0;
 
 void usb_storage_ping(void)
 {
@@ -44,11 +47,21 @@ static int8_t sd_storage_get_capacity(uint8_t lun, uint32_t *block_num, uint16_t
 {
     (void)lun;
     usb_storage_ping();
-    *block_size = SD_BLOCK_SIZE;
-    if (SD_GetBlockCount(block_num) != 0)
+
+    /* 容量只读一次并缓存，避免枚举期间反复访问 SD */
+    if (!s_cap_ok)
     {
-        return -1;
+        uint32_t blocks = 0;
+        if (SD_GetBlockCount(&blocks) != 0)
+        {
+            return -1;
+        }
+        s_cap_blocks = blocks;
+        s_cap_size = SD_BLOCK_SIZE;
+        s_cap_ok = 1;
     }
+    *block_num = s_cap_blocks;
+    *block_size = s_cap_size;
     return 0;
 }
 
