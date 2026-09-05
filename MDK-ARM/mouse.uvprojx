@@ -405,8 +405,6 @@
               <FileType>5</FileType>
               <FilePath>..\App\Inc\console.h</FilePath>
             </File>
-            
-            
             <File>
               <FileName>sd_spi.c</FileName>
               <FileType>1</FileType>
