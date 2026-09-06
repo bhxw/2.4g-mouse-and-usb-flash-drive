@@ -12,7 +12,8 @@ TX 发射端(MPU6050+nRF24L01)  --2.4G-->  RX 本仓库(nRF24L01) --> USB HID �
 ## 当前状态
 
 - 功能原型可运行：nRF 收包 → USB HID 鼠标上报
-- 升级进行中：USB MSC+HID 复合、FatFs + SD(SPI1+DMA) 日志、FreeRTOS 任务化 → 见里程碑
+- USB MSC U盘隔离验证中（分支 `test/msc-only`）：纯 MSC 枚举+数据传输已通过 Bus Hound 抓包确认，SPI 批量传输优化已完成，待硬件验证识别速度
+- 升级进行中：USB MSC+HID 复合、FatFs + SD(SPI1) 日志、FreeRTOS 任务化 → 见里程碑
 - 代码评审遗留问题与修复归属：见 `项目架构.md` §7 与 `开发日志.md`
 
 ## 目录结构
@@ -38,7 +39,7 @@ TX 发射端(MPU6050+nRF24L01)  --2.4G-->  RX 本仓库(nRF24L01) --> USB HID �
 - MCU：STM32F103C8T6（72MHz / 64KB Flash / 20KB RAM），HSE 8MHz，SWD 调试
 - USB：PA11/PA12（FS 设备）
 - nRF24L01：SPI2 = PB13/14/15，CE=PB0，CSN=PB1，IRQ=PB5
-- SD（规划）：SPI1 默认映射 PA5/6/7 + CS=PB12，模块 VCC=5V
+- SD（已实现）：SPI1 默认映射 PA5/6/7 + CS=PB12，模块 VCC=5V；阻塞式批量 HAL_SPI 传输
 - OLED：PB10/11 软件 I2C；UART1（PA9/10）printf 调试
 - 详细引脚/变更见 `接收端开发方案.md` §1
 
