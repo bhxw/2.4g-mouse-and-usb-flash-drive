@@ -8,8 +8,8 @@
 #include "sd_spi.h"
 #include "console.h"
 
-/* 诊断：1=U盘不碰SD(固定容量/空读写)，用于定位复合枚举问题 */
-#define SD_BYPASS_TEST  1
+/* 诊断：1=U盘不碰SD(固定容量/空读写)；0=真实SD */
+#define SD_BYPASS_TEST  0
 #include "main.h"       /* HAL_GetTick */
 
 #include <string.h>
