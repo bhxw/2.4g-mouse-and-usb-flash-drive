@@ -40,6 +40,16 @@ static const int8_t s_inquiry[] =
     '1', '.', '0', '0',                     /* Rev: 4 */
 };
 
+/* 访问前确保 SD 已初始化（usbstor 可能比 sd_log 早问容量） */
+static int8_t storage_sd_ensure(void)
+{
+    if (!SD_Ready())
+    {
+        return (SD_Init() == 0) ? 0 : -1;
+    }
+    return 0;
+}
+
 static int8_t sd_storage_init(uint8_t lun)
 {
     (void)lun;
@@ -58,7 +68,7 @@ static int8_t sd_storage_get_capacity(uint8_t lun, uint32_t *block_num, uint16_t
     if (!s_cap_ok)
     {
         uint32_t blocks = 0;
-        if (SD_GetBlockCount(&blocks) != 0)
+        if (storage_sd_ensure() != 0 || SD_GetBlockCount(&blocks) != 0)
         {
             return -1;
         }
@@ -92,6 +102,10 @@ static int8_t sd_storage_read(uint8_t lun, uint8_t *buf, uint32_t blk_addr, uint
     memset(buf, 0, (size_t)blk_len * SD_BLOCK_SIZE);
     return 0;
 #else
+    if (storage_sd_ensure() != 0)
+    {
+        return -1;
+    }
     for (uint16_t i = 0; i < blk_len; i++)
     {
         if (SD_ReadBlock(blk_addr + i, buf + (uint32_t)i * SD_BLOCK_SIZE) != 0)
@@ -110,6 +124,10 @@ static int8_t sd_storage_write(uint8_t lun, uint8_t *buf, uint32_t blk_addr, uin
 #if SD_BYPASS_TEST
     return 0;   /* 空写 */
 #else
+    if (storage_sd_ensure() != 0)
+    {
+        return -1;
+    }
     for (uint16_t i = 0; i < blk_len; i++)
     {
         if (SD_WriteBlock(blk_addr + i, buf + (uint32_t)i * SD_BLOCK_SIZE) != 0)

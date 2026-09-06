@@ -45,6 +45,7 @@ extern SPI_HandleTypeDef hspi1;
 #define SD_R1_READY  0x00
 
 static uint8_t s_hc = 0;    /* 1 = SDHC/SDXC，块地址模式 */
+static uint8_t s_ready = 0; /* 初始化成功标志 */
 
 /* ---------------- 底层原语 ---------------- */
 static void sd_cs_high(void)
@@ -142,6 +143,7 @@ uint8_t SD_Init(void)
     uint16_t retry;
 
     s_hc = 0;
+    s_ready = 0;
 
     /* CS 引脚（PB12）推挽输出，默认高 */
     __HAL_RCC_GPIOB_CLK_ENABLE();
@@ -255,7 +257,13 @@ uint8_t SD_Init(void)
 
     /* 切换到高速 */
     sd_spi_speed(SPI1_PRESC_HIGH);
+    s_ready = 1;
     return SD_ERR_NONE;
+}
+
+uint8_t SD_Ready(void)
+{
+    return s_ready;
 }
 
 uint8_t SD_ReadBlock(uint32_t block, uint8_t *buf)
