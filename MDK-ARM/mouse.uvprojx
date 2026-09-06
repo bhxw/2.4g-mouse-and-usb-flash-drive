@@ -380,8 +380,6 @@
         <Group>
           <GroupName>App</GroupName>
           <Files>
-            
-            
             <File>
               <FileName>usb_storage.c</FileName>
               <FileType>1</FileType>
