@@ -56,8 +56,8 @@ TX 发射端(MPU6050+nRF24L01)  --2.4G-->  RX 本仓库(nRF24L01) --> USB HID �
 | M0 | 时间基准单源化 + 外设重构 + 清理 | ✅ tag m0a/m0b |
 | M1 | FreeRTOS 任务化骨架 + rtos 抽象层 | ✅ tag m1 |
 | M2 | SD(SPI1) 驱动 + FatFs 日志链路(DATA.LOG) | ✅ tag m2a/m2b/m2（待硬件实测） |
-| M3 | USB MSC+HID 复合（A 内联 → B 任务化） | 待开始 |
-| M4 | 可靠性收尾（看门狗/24h/功耗） | 待开始 |
+| M3 | USB MSC+HID 复合设备 | ⏸ 挂起（分支 feature/usb-composite、test/msc-only；结论见开发日志） |
+| M4 | 系统监控：IWDG/运行统计/栈水位/链路计数 | ✅ m4a 编译过（待硬件长跑+功耗） |
 | M5 | 自研微内核替换（可选） | 待开始 |
 
 验收标准见 `接收端开发方案.md`。

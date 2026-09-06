@@ -7,4 +7,7 @@
  */
 void dbg_printf(const char *fmt, ...);
 
+/* 整段发送（用于 vTaskList / vTaskGetRunTimeStats 等大块文本） */
+void dbg_puts(const char *s);
+
 #endif /* __CONSOLE_H */

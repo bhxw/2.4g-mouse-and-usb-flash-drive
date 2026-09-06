@@ -23,6 +23,7 @@
 #include "tim.h"
 #include "usart.h"
 #include "usb_device.h"
+#include "sysmon.h"
 #include "gpio.h"
 
 /* Private includes ----------------------------------------------------------*/
@@ -103,6 +104,8 @@ int main(void)
   /* USER CODE BEGIN 2 */
   /* NRF_Demo_Init: NRF24L01 初始化/自检/RX_Mode(由 DEMO_ROLE 决定) + OLED 状态显示 */
   NRF_Demo_Init();
+
+  sysmon_init_hw();
 
   /* 启动 RTOS 应用任务（内部启动调度器，不返回） */
   app_start();
