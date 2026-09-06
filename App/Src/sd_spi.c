@@ -36,6 +36,9 @@ extern SPI_HandleTypeDef hspi1;
 #define SD_CMD8   0x08
 #define SD_CMD9   0x09
 #define SD_CMD17  0x11
+#define SD_CMD18  0x12
+#define SD_CMD25  0x19
+#define SD_CMD12  0x0C
 #define SD_CMD24  0x18
 #define SD_CMD55  0x37
 #define SD_CMD58  0x3A
@@ -445,5 +448,65 @@ uint8_t SD_GetBlockCount(uint32_t *blocks)
     {
         return SD_ERR_READ;
     }
+    return SD_ERR_NONE;
+}
+
+
+/* 多块读(CMD18)：n>0 */
+uint8_t SD_ReadBlocks(uint32_t block, uint8_t *buf, uint32_t n)
+{
+    uint8_t b;
+    uint32_t t0;
+
+    if (n == 0U) { return SD_ERR_NONE; }
+    if (!s_hc) { block <<= 9; }
+
+    sd_cs_low();
+    if (sd_cmd(SD_CMD18, block, 0x01) != SD_R1_READY)
+    {
+        sd_cs_high();
+        return SD_ERR_READ;
+    }
+    t0 = HAL_GetTick();
+    do { b = sd_xfer(0xFF); } while ((b != 0xFE) && ((HAL_GetTick() - t0) < 200U));
+    if (b != 0xFE) { sd_cs_high(); return SD_ERR_TIMEOUT; }
+
+    for (uint32_t k = 0; k < n; k++)
+    {
+        for (uint32_t i = 0; i < SD_BLOCK_SIZE; i++) { *buf++ = sd_xfer(0xFF); }
+        (void)sd_xfer(0xFF); (void)sd_xfer(0xFF);   /* 每块 CRC */
+    }
+    /* 停止传输 */
+    (void)sd_xfer(0xFF);
+    if (sd_cmd(SD_CMD12, 0, 0x01) > 1U) { /* 忽略 */ }
+    (void)sd_wait_ready(500);
+    sd_cs_high();
+    return SD_ERR_NONE;
+}
+
+/* 多块写(CMD25)：n>0；每块间等待繁忙（保险） */
+uint8_t SD_WriteBlocks(uint32_t block, const uint8_t *buf, uint32_t n)
+{
+    uint8_t r;
+
+    if (n == 0U) { return SD_ERR_NONE; }
+    if (!s_hc) { block <<= 9; }
+
+    sd_cs_low();
+    r = sd_cmd(SD_CMD25, block, 0x01);
+    if (r != SD_R1_READY) { sd_cs_high(); return SD_ERR_WRITE; }
+
+    for (uint32_t k = 0; k < n; k++)
+    {
+        if (k != 0U)
+        {
+            if (sd_wait_ready(1000)) { sd_cs_high(); return SD_ERR_TIMEOUT; }
+        }
+        (void)sd_xfer((k == (n - 1U)) ? 0xFD : 0xFC);   /* 本块起始令牌 */
+        for (uint32_t i = 0; i < SD_BLOCK_SIZE; i++) { (void)sd_xfer(*buf++); }
+        (void)sd_xfer(0xFF); (void)sd_xfer(0xFF);
+    }
+    if (sd_wait_ready(1000)) { sd_cs_high(); return SD_ERR_TIMEOUT; }
+    sd_cs_high();
     return SD_ERR_NONE;
 }

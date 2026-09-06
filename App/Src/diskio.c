@@ -31,6 +31,12 @@ DRESULT disk_read(BYTE pdrv, BYTE *buff, LBA_t sector, UINT count)
     {
         return RES_PARERR;
     }
+#if SD_USE_MULTI
+    if (SD_ReadBlocks((uint32_t)sector, buff, count) != 0)
+    {
+        return RES_ERROR;
+    }
+#else
     for (UINT i = 0; i < count; i++)
     {
         if (SD_ReadBlock((uint32_t)(sector + i), buff) != 0)
@@ -39,6 +45,7 @@ DRESULT disk_read(BYTE pdrv, BYTE *buff, LBA_t sector, UINT count)
         }
         buff += SD_BLOCK_SIZE;
     }
+#endif
     return RES_OK;
 }
 
@@ -48,6 +55,12 @@ DRESULT disk_write(BYTE pdrv, const BYTE *buff, LBA_t sector, UINT count)
     {
         return RES_PARERR;
     }
+#if SD_USE_MULTI
+    if (SD_WriteBlocks((uint32_t)sector, buff, count) != 0)
+    {
+        return RES_ERROR;
+    }
+#else
     for (UINT i = 0; i < count; i++)
     {
         if (SD_WriteBlock((uint32_t)(sector + i), buff) != 0)
@@ -56,6 +69,7 @@ DRESULT disk_write(BYTE pdrv, const BYTE *buff, LBA_t sector, UINT count)
         }
         buff += SD_BLOCK_SIZE;
     }
+#endif
     return RES_OK;
 }
 
