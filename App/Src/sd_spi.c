@@ -65,6 +65,34 @@ static uint8_t sd_xfer(uint8_t b)
     return rx;
 }
 
+/* 直接寄存器操作：全双工 SPI 单字节传输（发送 tx，同时接收）
+ * 避免 HAL 每次调用的状态机开销（~5-10μs），保持 SPI 全双工模式不变 */
+static inline uint8_t sd_spi_fast_byte(uint8_t tx)
+{
+    while (!(SPI1->SR & SPI_SR_TXE)) {}
+    *(__IO uint8_t *)&SPI1->DR = tx;
+    while (!(SPI1->SR & SPI_SR_RXNE)) {}
+    return *(__IO uint8_t *)&SPI1->DR;
+}
+
+/* 批量全双工读：发送 0xFF 时钟，同时接收数据到 buf */
+static void sd_spi_fast_read(uint8_t *buf, uint16_t len)
+{
+    for (uint16_t i = 0; i < len; i++)
+    {
+        buf[i] = sd_spi_fast_byte(0xFF);
+    }
+}
+
+/* 批量全双工写：发送 buf 数据，忽略接收 */
+static void sd_spi_fast_write(const uint8_t *buf, uint16_t len)
+{
+    for (uint16_t i = 0; i < len; i++)
+    {
+        (void)sd_spi_fast_byte(buf[i]);
+    }
+}
+
 /* 直接改写 SPI1 波特率预分频（不经过 HAL 状态机，避免 DeInit/Init 抖动） */
 static void sd_spi_speed(uint32_t prescaler)
 {
@@ -300,7 +328,7 @@ uint8_t SD_ReadBlock(uint32_t block, uint8_t *buf)
         return SD_ERR_TIMEOUT;
     }
 
-    HAL_SPI_Receive(&hspi1, buf, SD_BLOCK_SIZE, 200);
+    sd_spi_fast_read(buf, SD_BLOCK_SIZE);
     (void)sd_xfer(0xFF);  /* CRC 高字节 */
     (void)sd_xfer(0xFF);  /* CRC 低字节 */
     sd_cs_high();
@@ -325,7 +353,7 @@ uint8_t SD_WriteBlock(uint32_t block, const uint8_t *buf)
     }
 
     (void)sd_xfer(0xFE);  /* 起始令牌 */
-    HAL_SPI_Transmit(&hspi1, (uint8_t *)buf, SD_BLOCK_SIZE, 200);
+    sd_spi_fast_write(buf, SD_BLOCK_SIZE);
     (void)sd_xfer(0xFF);  /* CRC 高字节(忽略) */
     (void)sd_xfer(0xFF);  /* CRC 低字节(忽略) */
 
