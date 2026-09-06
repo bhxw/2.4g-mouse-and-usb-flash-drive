@@ -7,6 +7,9 @@
 
 #include "sd_spi.h"
 #include "console.h"
+
+/* 诊断：1=U盘不碰SD(固定容量/空读写)，用于定位复合枚举问题 */
+#define SD_BYPASS_TEST  1
 #include "main.h"       /* HAL_GetTick */
 
 #include <string.h>
@@ -47,8 +50,11 @@ static int8_t sd_storage_get_capacity(uint8_t lun, uint32_t *block_num, uint16_t
 {
     (void)lun;
     usb_storage_ping();
-
-    /* 容量只读一次并缓存，避免枚举期间反复访问 SD */
+#if SD_BYPASS_TEST
+    *block_num = 32768U;          /* 固定 16MB，便于观察枚举 */
+    *block_size = SD_BLOCK_SIZE;
+    return 0;
+#else
     if (!s_cap_ok)
     {
         uint32_t blocks = 0;
@@ -63,6 +69,7 @@ static int8_t sd_storage_get_capacity(uint8_t lun, uint32_t *block_num, uint16_t
     *block_num = s_cap_blocks;
     *block_size = s_cap_size;
     return 0;
+#endif
 }
 
 static int8_t sd_storage_is_ready(uint8_t lun)
@@ -79,8 +86,12 @@ static int8_t sd_storage_is_write_protected(uint8_t lun)
 
 static int8_t sd_storage_read(uint8_t lun, uint8_t *buf, uint32_t blk_addr, uint16_t blk_len)
 {
-    (void)lun;
+    (void)lun; (void)blk_addr; (void)blk_len;
     usb_storage_ping();
+#if SD_BYPASS_TEST
+    memset(buf, 0, (size_t)blk_len * SD_BLOCK_SIZE);
+    return 0;
+#else
     for (uint16_t i = 0; i < blk_len; i++)
     {
         if (SD_ReadBlock(blk_addr + i, buf + (uint32_t)i * SD_BLOCK_SIZE) != 0)
@@ -89,12 +100,16 @@ static int8_t sd_storage_read(uint8_t lun, uint8_t *buf, uint32_t blk_addr, uint
         }
     }
     return 0;
+#endif
 }
 
 static int8_t sd_storage_write(uint8_t lun, uint8_t *buf, uint32_t blk_addr, uint16_t blk_len)
 {
-    (void)lun;
+    (void)lun; (void)buf; (void)blk_addr; (void)blk_len;
     usb_storage_ping();
+#if SD_BYPASS_TEST
+    return 0;   /* 空写 */
+#else
     for (uint16_t i = 0; i < blk_len; i++)
     {
         if (SD_WriteBlock(blk_addr + i, buf + (uint32_t)i * SD_BLOCK_SIZE) != 0)
@@ -103,6 +118,7 @@ static int8_t sd_storage_write(uint8_t lun, uint8_t *buf, uint32_t blk_addr, uin
         }
     }
     return 0;
+#endif
 }
 
 static int8_t sd_storage_get_max_lun(void)
