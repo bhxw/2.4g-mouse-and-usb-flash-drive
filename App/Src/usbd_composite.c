@@ -163,8 +163,14 @@ static uint8_t comp_data_in(USBD_HandleTypeDef *pdev, uint8_t epnum)
 
 static uint8_t comp_data_out(USBD_HandleTypeDef *pdev, uint8_t epnum)
 {
+    static uint16_t s_cnt = 0;
+
     if ((epnum & 0x7FU) == (MSC_EPOUT_ADDR & 0x7FU))
     {
+        if (s_cnt < 20)
+        {
+            dbg_printf("[MSC] OUT ep%u n=%u\r\n", (unsigned)(epnum & 0x7FU), (unsigned)++s_cnt);
+        }
         set_child(pdev, s_msc_h);
         (void)USBD_MSC.DataOut(pdev, epnum);
         set_child(pdev, s_hid_h);
