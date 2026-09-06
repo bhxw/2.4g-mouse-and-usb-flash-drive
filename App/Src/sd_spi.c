@@ -300,10 +300,7 @@ uint8_t SD_ReadBlock(uint32_t block, uint8_t *buf)
         return SD_ERR_TIMEOUT;
     }
 
-    for (uint16_t i = 0; i < SD_BLOCK_SIZE; i++)
-    {
-        buf[i] = sd_xfer(0xFF);
-    }
+    HAL_SPI_Receive(&hspi1, buf, SD_BLOCK_SIZE, 200);
     (void)sd_xfer(0xFF);  /* CRC 高字节 */
     (void)sd_xfer(0xFF);  /* CRC 低字节 */
     sd_cs_high();
@@ -328,10 +325,7 @@ uint8_t SD_WriteBlock(uint32_t block, const uint8_t *buf)
     }
 
     (void)sd_xfer(0xFE);  /* 起始令牌 */
-    for (uint16_t i = 0; i < SD_BLOCK_SIZE; i++)
-    {
-        (void)sd_xfer(buf[i]);
-    }
+    HAL_SPI_Transmit(&hspi1, (uint8_t *)buf, SD_BLOCK_SIZE, 200);
     (void)sd_xfer(0xFF);  /* CRC 高字节(忽略) */
     (void)sd_xfer(0xFF);  /* CRC 低字节(忽略) */
 
