@@ -28,6 +28,89 @@ EndBSPDependencies */
 #include "usbd_msc_scsi.h"
 #include "usbd_msc.h"
 #include "usbd_msc_data.h"
+#include "usbd_core.h"
+#include "rtos_api.h"
+
+#include <string.h>
+
+/* ---- Deferred SCSI processing (SD ops in task, not USB ISR) ---- */
+#define DEFER_NONE  0U
+#define DEFER_READ  1U
+#define DEFER_WRITE 2U
+
+static volatile uint8_t  s_deferred_op   = DEFER_NONE;
+static uint8_t           s_write_shadow[MSC_MEDIA_PACKET];
+static rtos_queue_handle_t s_scsi_sig_q  = NULL;
+
+void scsi_msc_set_signal_queue(void *q)
+{
+    s_scsi_sig_q = (rtos_queue_handle_t)q;
+}
+
+void scsi_msc_task_entry(void *param)
+{
+    uint8_t sig;
+    (void)param;
+
+    for (;;)
+    {
+        if (rtos_queue_recv(s_scsi_sig_q, &sig, RTOS_WAIT_FOREVER) != 0)
+            continue;
+
+        USBD_MSC_BOT_HandleTypeDef *hmsc = usbd_msc_get_hmsc();
+        USBD_HandleTypeDef *pdev     = usbd_msc_get_pdev();
+        uint32_t len = hmsc->scsi_blk_len * hmsc->scsi_blk_size;
+        len = MIN(len, MSC_MEDIA_PACKET);
+        uint16_t blk_count = (uint16_t)(len / hmsc->scsi_blk_size);
+
+        if (s_deferred_op == DEFER_READ)
+        {
+            if ((usbd_msc_get_fops())->Read(0, hmsc->bot_data,
+                                            hmsc->scsi_blk_addr, blk_count) < 0)
+            {
+                SCSI_SenseCode(pdev, 0, HARDWARE_ERROR, UNRECOVERED_READ_ERROR);
+                MSC_BOT_SendCSW(pdev, USBD_CSW_CMD_FAILED);
+            }
+            else
+            {
+                USBD_LL_Transmit(pdev, MSC_EPIN_ADDR, hmsc->bot_data, len);
+                hmsc->scsi_blk_addr += blk_count;
+                hmsc->scsi_blk_len  -= blk_count;
+                hmsc->csw.dDataResidue -= len;
+                if (hmsc->scsi_blk_len == 0U)
+                    hmsc->bot_state = USBD_BOT_LAST_DATA_IN;
+            }
+        }
+        else if (s_deferred_op == DEFER_WRITE)
+        {
+            if ((usbd_msc_get_fops())->Write(0, s_write_shadow,
+                                             hmsc->scsi_blk_addr, blk_count) < 0)
+            {
+                SCSI_SenseCode(pdev, 0, HARDWARE_ERROR, WRITE_FAULT);
+                MSC_BOT_SendCSW(pdev, USBD_CSW_CMD_FAILED);
+            }
+            else
+            {
+                hmsc->scsi_blk_addr += blk_count;
+                hmsc->scsi_blk_len  -= blk_count;
+                hmsc->csw.dDataResidue -= len;
+                if (hmsc->scsi_blk_len == 0U)
+                {
+                    MSC_BOT_SendCSW(pdev, USBD_CSW_CMD_PASSED);
+                }
+                else
+                {
+                    len = MIN((hmsc->scsi_blk_len * hmsc->scsi_blk_size),
+                              MSC_MEDIA_PACKET);
+                    USBD_LL_PrepareReceive(pdev, MSC_EPOUT_ADDR,
+                                           hmsc->bot_data, len);
+                }
+            }
+        }
+
+        s_deferred_op = DEFER_NONE;
+    }
+}
 
 
 
@@ -183,13 +266,7 @@ static int8_t SCSI_TestUnitReady(USBD_HandleTypeDef  *pdev, uint8_t lun, uint8_t
 {
   USBD_MSC_BOT_HandleTypeDef  *hmsc = usbd_msc_get_hmsc();
 
-  /* case 9 : Hi > D0 */
-  if (hmsc->cbw.dDataLength != 0U)
-  {
-    SCSI_SenseCode(pdev, hmsc->cbw.bLUN, ILLEGAL_REQUEST, INVALID_CDB);
-
-    return -1;
-  }
+  (void)params;
 
   if ((usbd_msc_get_fops())->IsReady(lun) != 0)
   {
@@ -492,10 +569,14 @@ static int8_t SCSI_Read10(USBD_HandleTypeDef *pdev, uint8_t lun, uint8_t *params
       SCSI_SenseCode(pdev, hmsc->cbw.bLUN, ILLEGAL_REQUEST, INVALID_CDB);
       return -1;
     }
-  }
-  hmsc->bot_data_length = MSC_MEDIA_PACKET;
 
-  return SCSI_ProcessRead(pdev, lun);
+    hmsc->bot_data_length = MSC_MEDIA_PACKET;
+    return SCSI_ProcessRead(pdev, lun);
+  }
+  else /* Read Process ongoing */
+  {
+    return SCSI_ProcessRead(pdev, lun);
+  }
 }
 
 /**
@@ -628,31 +709,14 @@ static int8_t SCSI_CheckAddressRange(USBD_HandleTypeDef *pdev, uint8_t lun,
 */
 static int8_t SCSI_ProcessRead(USBD_HandleTypeDef  *pdev, uint8_t lun)
 {
-  USBD_MSC_BOT_HandleTypeDef *hmsc = usbd_msc_get_hmsc();
-  uint32_t len = hmsc->scsi_blk_len * hmsc->scsi_blk_size;
+  (void)pdev;
+  (void)lun;
 
-  len = MIN(len, MSC_MEDIA_PACKET);
-
-  if ((usbd_msc_get_fops())->Read(lun,
-                                                     hmsc->bot_data,
-                                                     hmsc->scsi_blk_addr,
-                                                     (len / hmsc->scsi_blk_size)) < 0)
+  s_deferred_op = DEFER_READ;
+  if (s_scsi_sig_q != NULL)
   {
-    SCSI_SenseCode(pdev, lun, HARDWARE_ERROR, UNRECOVERED_READ_ERROR);
-    return -1;
-  }
-
-  USBD_LL_Transmit(pdev, MSC_EPIN_ADDR, hmsc->bot_data, len);
-
-  hmsc->scsi_blk_addr += (len / hmsc->scsi_blk_size);
-  hmsc->scsi_blk_len -= (len / hmsc->scsi_blk_size);
-
-  /* case 6 : Hi = Di */
-  hmsc->csw.dDataResidue -= len;
-
-  if (hmsc->scsi_blk_len == 0U)
-  {
-    hmsc->bot_state = USBD_BOT_LAST_DATA_IN;
+    uint8_t sig = 1;
+    rtos_queue_send_from_isr(s_scsi_sig_q, &sig);
   }
   return 0;
 }
@@ -668,35 +732,18 @@ static int8_t SCSI_ProcessWrite(USBD_HandleTypeDef  *pdev, uint8_t lun)
 {
   USBD_MSC_BOT_HandleTypeDef *hmsc = usbd_msc_get_hmsc();
   uint32_t len = hmsc->scsi_blk_len * hmsc->scsi_blk_size;
-
   len = MIN(len, MSC_MEDIA_PACKET);
 
-  if ((usbd_msc_get_fops())->Write(lun, hmsc->bot_data,
-                                                      hmsc->scsi_blk_addr,
-                                                      (len / hmsc->scsi_blk_size)) < 0)
+  (void)pdev;
+  (void)lun;
+
+  memcpy(s_write_shadow, hmsc->bot_data, len);
+  s_deferred_op = DEFER_WRITE;
+  if (s_scsi_sig_q != NULL)
   {
-    SCSI_SenseCode(pdev, lun, HARDWARE_ERROR, WRITE_FAULT);
-
-    return -1;
+    uint8_t sig = 1;
+    rtos_queue_send_from_isr(s_scsi_sig_q, &sig);
   }
-
-  hmsc->scsi_blk_addr += (len / hmsc->scsi_blk_size);
-  hmsc->scsi_blk_len -= (len / hmsc->scsi_blk_size);
-
-  /* case 12 : Ho = Do */
-  hmsc->csw.dDataResidue -= len;
-
-  if (hmsc->scsi_blk_len == 0U)
-  {
-    MSC_BOT_SendCSW(pdev, USBD_CSW_CMD_PASSED);
-  }
-  else
-  {
-    len = MIN((hmsc->scsi_blk_len * hmsc->scsi_blk_size), MSC_MEDIA_PACKET);
-    /* Prepare EP to Receive next packet */
-    USBD_LL_PrepareReceive(pdev, MSC_EPOUT_ADDR, hmsc->bot_data, len);
-  }
-
   return 0;
 }
 /**

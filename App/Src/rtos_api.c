@@ -50,6 +50,17 @@ int rtos_queue_send(rtos_queue_handle_t q, const void *item, uint32_t timeout_ms
     return (xQueueSend((QueueHandle_t)q, item, rtos_ms_to_ticks(timeout_ms)) == pdTRUE) ? 0 : -1;
 }
 
+int rtos_queue_send_from_isr(rtos_queue_handle_t q, const void *item)
+{
+    BaseType_t woken = pdFALSE;
+    BaseType_t rc = xQueueSendFromISR((QueueHandle_t)q, item, &woken);
+    if (woken)
+    {
+        portYIELD_FROM_ISR(woken);
+    }
+    return (rc == pdTRUE) ? 0 : -1;
+}
+
 int rtos_queue_recv(rtos_queue_handle_t q, void *item, uint32_t timeout_ms)
 {
     return (xQueueReceive((QueueHandle_t)q, item, rtos_ms_to_ticks(timeout_ms)) == pdTRUE) ? 0 : -1;
