@@ -126,6 +126,7 @@ static int8_t sd_storage_read(uint8_t lun, uint8_t *buf, uint32_t blk_addr, uint
     {
         return -1;
     }
+    dbg_printf("[S]RD a=%u l=%u\r\n", (unsigned)blk_addr, (unsigned)blk_len);
     for (uint16_t i = 0; i < blk_len; i++)
     {
         if (SD_ReadBlock(blk_addr + i, buf + (uint32_t)i * SD_BLOCK_SIZE) != 0)
@@ -148,6 +149,7 @@ static int8_t sd_storage_write(uint8_t lun, uint8_t *buf, uint32_t blk_addr, uin
     {
         return -1;
     }
+    dbg_printf("[S]WR a=%u l=%u\r\n", (unsigned)blk_addr, (unsigned)blk_len);
     for (uint16_t i = 0; i < blk_len; i++)
     {
         if (SD_WriteBlock(blk_addr + i, buf + (uint32_t)i * SD_BLOCK_SIZE) != 0)
