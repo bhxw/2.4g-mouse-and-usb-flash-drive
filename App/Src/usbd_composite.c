@@ -144,6 +144,8 @@ static uint8_t comp_setup(USBD_HandleTypeDef *pdev, USBD_SetupReqTypedef *req)
 
 static uint8_t comp_data_in(USBD_HandleTypeDef *pdev, uint8_t epnum)
 {
+    static uint16_t s_cnt = 0;
+
     switch (epnum & 0x7FU)
     {
     case (HID_EPIN_ADDR & 0x7FU):
@@ -151,6 +153,10 @@ static uint8_t comp_data_in(USBD_HandleTypeDef *pdev, uint8_t epnum)
         (void)USBD_HID.DataIn(pdev, epnum);
         break;
     case (MSC_EPIN_ADDR & 0x7FU):
+        if (s_cnt < 20)
+        {
+            dbg_printf("[MSC] IN ep2 n=%u\r\n", (unsigned)++s_cnt);
+        }
         set_child(pdev, s_msc_h);
         (void)USBD_MSC.DataIn(pdev, epnum);
         break;
@@ -167,12 +173,17 @@ static uint8_t comp_data_out(USBD_HandleTypeDef *pdev, uint8_t epnum)
 
     if ((epnum & 0x7FU) == (MSC_EPOUT_ADDR & 0x7FU))
     {
+        uint8_t r;
         if (s_cnt < 20)
         {
             dbg_printf("[MSC] OUT ep%u n=%u\r\n", (unsigned)(epnum & 0x7FU), (unsigned)++s_cnt);
         }
         set_child(pdev, s_msc_h);
-        (void)USBD_MSC.DataOut(pdev, epnum);
+        r = USBD_MSC.DataOut(pdev, epnum);
+        if (s_cnt < 20)
+        {
+            dbg_printf("[MSC] OUT ret=%u\r\n", (unsigned)r);
+        }
         set_child(pdev, s_hid_h);
     }
     return USBD_OK;
