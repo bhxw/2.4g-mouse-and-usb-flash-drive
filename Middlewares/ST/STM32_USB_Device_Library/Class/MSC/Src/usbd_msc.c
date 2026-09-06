@@ -522,8 +522,17 @@ uint8_t USBD_MSC_Setup(USBD_HandleTypeDef *pdev, USBD_SetupReqTypedef *req)
 * @param  epnum: endpoint index
 * @retval status
 */
+extern void dbg_printf(const char *fmt, ...);
+
 uint8_t USBD_MSC_DataIn(USBD_HandleTypeDef *pdev, uint8_t epnum)
 {
+  static unsigned s_dbg = 0;
+
+  if (s_dbg < 20)
+  {
+    s_dbg++;
+    dbg_printf("[DIN] n=%u\r\n", (unsigned)s_dbg);
+  }
   MSC_BOT_DataIn(pdev, epnum);
 
   return USBD_OK;
