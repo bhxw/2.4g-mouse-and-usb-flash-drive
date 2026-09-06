@@ -13,6 +13,7 @@
 #include "usbd_hid.h"
 #include "usbd_msc.h"
 #include "usb_storage.h"
+#include "console.h"
 
 /* ---------------- 复合配置描述符（FS）：9 配置 + 25 HID 接口 + 23 MSC 接口 = 57 ---------------- */
 #define COMP_CFG_SIZ      57U
@@ -63,20 +64,30 @@ static void set_child(USBD_HandleTypeDef *pdev, void *h)
 /* ---------------- 类回调 ---------------- */
 static uint8_t comp_init(USBD_HandleTypeDef *pdev, uint8_t cfgidx)
 {
+    uint8_t st;
+
+    dbg_printf("[CMP] init cfg=%u\r\n", (unsigned)cfgidx);
+
     /* HID 先注册并初始化（默认 pClassData = HID 句柄） */
-    if (USBD_HID.Init(pdev, cfgidx) != USBD_OK)
+    st = USBD_HID.Init(pdev, cfgidx);
+    s_hid_h = pdev->pClassData;
+    dbg_printf("[CMP] hid init st=%u\r\n", (unsigned)st);
+    if (st != USBD_OK)
     {
         return USBD_FAIL;
     }
-    s_hid_h = pdev->pClassData;
 
     /* MSC：注册介质层后初始化 */
     USBD_MSC_RegisterStorage(pdev, &USBD_SD_Storage_fops);
-    if (USBD_MSC.Init(pdev, cfgidx) != USBD_OK)
-    {
-        return USBD_FAIL;
-    }
+    st = USBD_MSC.Init(pdev, cfgidx);
     s_msc_h = pdev->pClassData;
+    dbg_printf("[CMP] msc init st=%u\r\n", (unsigned)st);
+    if (st != USBD_OK)
+    {
+        /* MSC 失败不拖垮 HID：继续配置，仅 MSC 不可用 */
+        set_child(pdev, s_hid_h);
+        return USBD_OK;
+    }
 
     set_child(pdev, s_hid_h);   /* 默认指向 HID */
     return USBD_OK;
@@ -95,21 +106,37 @@ static uint8_t comp_deinit(USBD_HandleTypeDef *pdev, uint8_t cfgidx)
 static uint8_t comp_setup(USBD_HandleTypeDef *pdev, USBD_SetupReqTypedef *req)
 {
     uint8_t ret;
+    int is_msc_class;
 
-    switch (req->wIndex)
+    /* MSC 类请求：GET_MAX_LUN(0xFE) / BOT_RESET(0xFF) —— 部分主机 wIndex 发 0，需按 bRequest 兜底 */
+    is_msc_class = (req->bRequest == BOT_GET_MAX_LUN) || (req->bRequest == BOT_RESET);
+
+    dbg_printf("[CMP] setup t=%02X r=%02X v=%04X i=%04X\r\n",
+               (unsigned)req->bmRequest, (unsigned)req->bRequest,
+               (unsigned)req->wValue, (unsigned)req->wIndex);
+
+    if (is_msc_class || req->wIndex == COMP_IFACE_MSC)
     {
-    case COMP_IFACE_HID:
+        if (s_msc_h != NULL)
+        {
+            set_child(pdev, s_msc_h);
+            ret = USBD_MSC.Setup(pdev, req);
+        }
+        else
+        {
+            USBD_CtlError(pdev, req);
+            ret = USBD_FAIL;
+        }
+    }
+    else if (req->wIndex == COMP_IFACE_HID)
+    {
         set_child(pdev, s_hid_h);
         ret = USBD_HID.Setup(pdev, req);
-        break;
-    case COMP_IFACE_MSC:
-        set_child(pdev, s_msc_h);
-        ret = USBD_MSC.Setup(pdev, req);
-        break;
-    default:
+    }
+    else
+    {
         USBD_CtlError(pdev, req);
         ret = USBD_FAIL;
-        break;
     }
     set_child(pdev, s_hid_h);
     return ret;

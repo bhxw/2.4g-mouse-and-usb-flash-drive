@@ -1,6 +1,6 @@
 /**
  * @file app_main.c
- * @brief 应用层任务（M2c）
+ * @brief 应用层任务（M2c/M3）
  *        任务集：rf_rx（射频收包→HID 上报 + 投递日志）、sd_log（批量写 DATA.LOG）。
  *        所有任务一律通过 rtos_api 访问内核。
  */
@@ -12,6 +12,7 @@
 #include "sd_log.h"
 #include "usb_device.h"
 #include "usbd_hid.h"   /* USBD_HID_SendReport */
+#include "console.h"
 
 extern USBD_HandleTypeDef hUsbDeviceFS;
 
@@ -26,6 +27,7 @@ static void rf_rx_task(void *param)
 {
     MousePacket_t pack = {0};
     int8_t mouseout[4] = {0, 0, 0, 0};
+    uint32_t last_busy_print = 0;
 
     (void)param;
 
@@ -36,7 +38,14 @@ static void rf_rx_task(void *param)
             mouseout[0] = pack.buttons;
             mouseout[1] = pack.x;
             mouseout[2] = pack.y;
-            USBD_HID_SendReport(&hUsbDeviceFS, (uint8_t *)mouseout, sizeof(mouseout));
+            if (USBD_HID_SendReport(&hUsbDeviceFS, (uint8_t *)mouseout, sizeof(mouseout)) != USBD_OK)
+            {
+                if (HAL_GetTick() - last_busy_print > 2000U)
+                {
+                    dbg_printf("[RF] HID report busy\r\n");
+                    last_busy_print = HAL_GetTick();
+                }
+            }
 
             sd_log_write_packet(&pack);
         }
