@@ -23,7 +23,7 @@
 #include "stm32f1xx_hal.h"
 #include "usbd_def.h"
 #include "usbd_core.h"
-#include "usbd_hid.h"
+#include "usbd_msc.h"
 
 /* USER CODE BEGIN Includes */
 
@@ -332,9 +332,10 @@ USBD_StatusTypeDef USBD_LL_Init(USBD_HandleTypeDef *pdev)
   HAL_PCDEx_PMAConfig((PCD_HandleTypeDef*)pdev->pData , 0x00 , PCD_SNG_BUF, 0x18);
   HAL_PCDEx_PMAConfig((PCD_HandleTypeDef*)pdev->pData , 0x80 , PCD_SNG_BUF, 0x58);
   /* USER CODE END EndPoint_Configuration */
-  /* USER CODE BEGIN EndPoint_Configuration_HID */
-  HAL_PCDEx_PMAConfig((PCD_HandleTypeDef*)pdev->pData , 0x82 , PCD_SNG_BUF, 0x100);
-  /* USER CODE END EndPoint_Configuration_HID */
+  /* USER CODE BEGIN EndPoint_Configuration_MSC */
+  HAL_PCDEx_PMAConfig((PCD_HandleTypeDef*)pdev->pData , 0x81 , PCD_SNG_BUF, 0x98);
+  HAL_PCDEx_PMAConfig((PCD_HandleTypeDef*)pdev->pData , 0x01 , PCD_SNG_BUF, 0xD8);
+  /* USER CODE END EndPoint_Configuration_MSC */
   return USBD_OK;
 }
 
@@ -587,20 +588,8 @@ void USBD_LL_Delay(uint32_t Delay)
   */
 void *USBD_static_malloc(uint32_t size)
 {
-  /* 固定双缓冲复用：小块给 HID 句柄，大块给 MSC 句柄（MSC 内含 512B bot_data）。
-   * 重复 Init/DeInit 循环时返回同一块内存（DeInit 的 free 为空操作），避免池耗尽。 */
-  static uint8_t s_mem_small[64];
-  static uint8_t s_mem_big[1024];
-
-  if (size <= sizeof(s_mem_small))
-  {
-    return (void *)s_mem_small;
-  }
-  if (size <= sizeof(s_mem_big))
-  {
-    return (void *)s_mem_big;
-  }
-  return NULL;
+  static uint32_t mem[(sizeof(USBD_MSC_BOT_HandleTypeDef)/4)+1];/* On 32-bit boundary */
+  return mem;
 }
 
 /**
