@@ -300,14 +300,28 @@ static void  MSC_BOT_SendData(USBD_HandleTypeDef *pdev, uint8_t *pbuf,
 * @param  status : CSW status
 * @retval None
 */
+extern void dbg_printf(const char *fmt, ...);
+
 void  MSC_BOT_SendCSW(USBD_HandleTypeDef  *pdev,
                       uint8_t CSW_Status)
 {
   USBD_MSC_BOT_HandleTypeDef  *hmsc = usbd_msc_get_hmsc();
+  static unsigned s_dbg = 0;
 
   hmsc->csw.dSignature = USBD_BOT_CSW_SIGNATURE;
   hmsc->csw.bStatus = CSW_Status;
   hmsc->bot_state = USBD_BOT_IDLE;
+  if (s_dbg < 10)
+  {
+    s_dbg++;
+    dbg_printf("[CSW] op=%02X ctag=%08lX sig=%08lX tag=%08lX res=%08lX st=%u\r\n",
+               (unsigned)hmsc->cbw.CB[0],
+               (unsigned long)hmsc->cbw.dTag,
+               (unsigned long)hmsc->csw.dSignature,
+               (unsigned long)hmsc->csw.dTag,
+               (unsigned long)hmsc->csw.dDataResidue,
+               (unsigned)hmsc->csw.bStatus);
+  }
 
   USBD_LL_Transmit(pdev, MSC_EPIN_ADDR, (uint8_t *)(void *)&hmsc->csw,
                    USBD_BOT_CSW_LENGTH);
