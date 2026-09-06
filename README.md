@@ -11,9 +11,14 @@ TX 发射端(MPU6050+nRF24L01)  --2.4G-->  RX 本仓库(nRF24L01) --> USB HID �
 
 ## 当前状态
 
-- 功能原型可运行：nRF 收包 → USB HID 鼠标上报
-- 升级进行中：USB MSC+HID 复合、FatFs + SD(SPI1+DMA) 日志、FreeRTOS 任务化 → 见里程碑
-- 代码评审遗留问题与修复归属：见 `项目架构.md` §7 与 `开发日志.md`
+- ✅ **USB HID+MSC 复合设备已验证可用**（分支 `feature/composite-hid-msc`）
+  - 鼠标：nRF 收包 → HID 上报，正常工作
+  - U盘：Windows 正常识别，文件读写正确
+  - SCSI 延迟处理已实现（SD 读写在 FreeRTOS 任务中执行，不阻塞 USB ISR）
+  - 已知性能瓶颈：SD SPI 阻塞式传输，~4MB 文件约 2-3 分钟（后续可 DMA + 多块命令优化）
+- 已实现：nRF 收包 → HID 鼠标上报 + SD 卡 → MSC U盘，复合描述符 57B（HID EP1 + MSC EP2）
+- 已实现：FatFs + SD(SPI1) 日志链路（DATA.LOG 定长二进制记录）
+- 待完成：M4 可靠性收尾（看门狗/24h 测试/功耗）；后续优化见 `接收端开发方案.md` §7
 
 ## 目录结构
 
@@ -38,7 +43,7 @@ TX 发射端(MPU6050+nRF24L01)  --2.4G-->  RX 本仓库(nRF24L01) --> USB HID �
 - MCU：STM32F103C8T6（72MHz / 64KB Flash / 20KB RAM），HSE 8MHz，SWD 调试
 - USB：PA11/PA12（FS 设备）
 - nRF24L01：SPI2 = PB13/14/15，CE=PB0，CSN=PB1，IRQ=PB5
-- SD（规划）：SPI1 默认映射 PA5/6/7 + CS=PB12，模块 VCC=5V
+- SD（已实现）：SPI1 默认映射 PA5/6/7 + CS=PB12，模块 VCC=5V；阻塞式批量 HAL_SPI 传输
 - OLED：PB10/11 软件 I2C；UART1（PA9/10）printf 调试
 - 详细引脚/变更见 `接收端开发方案.md` §1
 
@@ -55,9 +60,6 @@ TX 发射端(MPU6050+nRF24L01)  --2.4G-->  RX 本仓库(nRF24L01) --> USB HID �
 |---|---|---|
 | M0 | 时间基准单源化 + 外设重构 + 清理 | ✅ tag m0a/m0b |
 | M1 | FreeRTOS 任务化骨架 + rtos 抽象层 | ✅ tag m1 |
-| M2 | SD(SPI1) 驱动 + FatFs 日志链路(DATA.LOG) | ✅ tag m2a/m2b/m2（待硬件实测） |
-| M3 | USB MSC+HID 复合设备 | ⏸ 挂起（分支 feature/usb-composite、test/msc-only；结论见开发日志） |
-| M4 | 系统监控：运行统计/栈水位/链路计数 ✅；IWDG 暂禁(LSI 待实测) | ✅ m4a（待 24h+功耗） |
 | M5 | 自研微内核替换（可选） | 待开始 |
 
 验收标准见 `接收端开发方案.md`。
@@ -72,3 +74,9 @@ TX 发射端(MPU6050+nRF24L01)  --2.4G-->  RX 本仓库(nRF24L01) --> USB HID �
 ## 说明
 
 - `参考历程/`、个人简历文档、硬件手册等**仅本地保留，不入库**（见 `.gitignore`）
+| M2 | SD(SPI1) 驱动 + FatFs 日志链路(DATA.LOG) | ✅ tag m2a/m2b/m2（待硬件实测） |
+| M3 | USB MSC+HID 复合设备 | ⏸ 挂起（分支 feature/usb-composite、test/msc-only；结论见开发日志） |
+| M4 | 系统监控：运行统计/栈水位/链路计数 ✅；IWDG 暂禁(LSI 待实测) | ✅ m4a（待 24h+功耗） |
+| M2 | SD(SPI1) 驱动 + FatFs 日志链路(DATA.LOG) | ✅ tag m2a/m2b/m2 |
+| M3 | USB MSC+HID 复合（A 内联 → B 任务化） | ✅ 硬件验证通过 |
+| M4 | 可靠性收尾（看门狗/24h/功耗） | 待开始 |

@@ -279,27 +279,12 @@ static void  MSC_BOT_CBW_Decode(USBD_HandleTypeDef  *pdev)
 * @param  len: Data Length
 * @retval None
 */
-extern void dbg_printf(const char *fmt, ...);
-
 static void  MSC_BOT_SendData(USBD_HandleTypeDef *pdev, uint8_t *pbuf,
                               uint16_t len)
 {
   USBD_MSC_BOT_HandleTypeDef  *hmsc = usbd_msc_get_hmsc();
-  static unsigned s_dbg = 0;
 
   uint16_t length = (uint16_t)MIN(hmsc->cbw.dDataLength, len);
-
-  if ((hmsc->cbw.CB[0] == 0x12U) && (s_dbg < 4))
-  {
-    s_dbg++;
-    dbg_printf("[INQ] dlen=%lu tx=%u\r\n",
-               (unsigned long)hmsc->cbw.dDataLength, (unsigned)length);
-    for (uint16_t i = 0; i < length && i < 24; i++)
-    {
-      dbg_printf("%02X ", (unsigned)pbuf[i]);
-    }
-    dbg_printf("\r\n");
-  }
 
   hmsc->csw.dDataResidue -= len;
   hmsc->csw.bStatus = USBD_CSW_CMD_PASSED;
@@ -315,28 +300,14 @@ static void  MSC_BOT_SendData(USBD_HandleTypeDef *pdev, uint8_t *pbuf,
 * @param  status : CSW status
 * @retval None
 */
-extern void dbg_printf(const char *fmt, ...);
-
 void  MSC_BOT_SendCSW(USBD_HandleTypeDef  *pdev,
                       uint8_t CSW_Status)
 {
   USBD_MSC_BOT_HandleTypeDef  *hmsc = usbd_msc_get_hmsc();
-  static unsigned s_dbg = 0;
 
   hmsc->csw.dSignature = USBD_BOT_CSW_SIGNATURE;
   hmsc->csw.bStatus = CSW_Status;
   hmsc->bot_state = USBD_BOT_IDLE;
-  if (s_dbg < 10)
-  {
-    s_dbg++;
-    dbg_printf("[CSW] op=%02X ctag=%08lX sig=%08lX tag=%08lX res=%08lX st=%u\r\n",
-               (unsigned)hmsc->cbw.CB[0],
-               (unsigned long)hmsc->cbw.dTag,
-               (unsigned long)hmsc->csw.dSignature,
-               (unsigned long)hmsc->csw.dTag,
-               (unsigned long)hmsc->csw.dDataResidue,
-               (unsigned)hmsc->csw.bStatus);
-  }
 
   USBD_LL_Transmit(pdev, MSC_EPIN_ADDR, (uint8_t *)(void *)&hmsc->csw,
                    USBD_BOT_CSW_LENGTH);

@@ -167,6 +167,9 @@ int8_t SCSI_ProcessCmd(USBD_HandleTypeDef *pdev, uint8_t lun, uint8_t *cmd);
 void SCSI_SenseCode(USBD_HandleTypeDef *pdev, uint8_t lun, uint8_t sKey,
                     uint8_t ASC);
 
+/* Deferred SCSI: signal queue for SD operations in task context */
+void scsi_msc_set_signal_queue(void *q);
+
 /**
   * @}
   */

@@ -17,4 +17,7 @@ uint32_t usb_storage_last_active_ms(void);
 /** 主程序调用（非ISR）：预初始化 SD 并缓存容量，避免 usbstor 在中断里读 SD */
 void usb_storage_preinit(void);
 
+/** 创建 SCSI 延迟处理信号队列（在调度器启动前调用） */
+void usb_storage_msc_task_init(void);
+
 #endif /* __USB_STORAGE_H */

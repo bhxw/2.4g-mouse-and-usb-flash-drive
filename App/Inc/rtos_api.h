@@ -34,6 +34,9 @@ int rtos_queue_create(uint16_t depth, uint16_t item_bytes, rtos_queue_handle_t *
 /** 入队（复制 item_bytes 字节）。成功 0，满/失败 -1。 */
 int rtos_queue_send(rtos_queue_handle_t q, const void *item, uint32_t timeout_ms);
 
+/** ISR 安全入队（仅用于中断上下文通知任务）。成功 0，满/失败 -1。 */
+int rtos_queue_send_from_isr(rtos_queue_handle_t q, const void *item);
+
 /** 出队（复制 item_bytes 字节）。成功 0，超时/失败 -1。 */
 int rtos_queue_recv(rtos_queue_handle_t q, void *item, uint32_t timeout_ms);
 

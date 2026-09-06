@@ -103,9 +103,11 @@ uint8_t  *USBD_MSC_GetDeviceQualifierDescriptor(uint16_t *length);
 
 static USBD_MSC_BOT_HandleTypeDef *s_hmsc = NULL;
 static USBD_StorageTypeDef        *s_fops  = NULL;
+static USBD_HandleTypeDef         *s_pdev  = NULL;
 
 USBD_MSC_BOT_HandleTypeDef *usbd_msc_get_hmsc(void) { return s_hmsc; }
 USBD_StorageTypeDef        *usbd_msc_get_fops(void)  { return s_fops; }
+USBD_HandleTypeDef         *usbd_msc_get_pdev(void)  { return s_pdev; }
 
 USBD_ClassTypeDef  USBD_MSC =
 {
@@ -307,6 +309,7 @@ uint8_t USBD_MSC_Init(USBD_HandleTypeDef *pdev, uint8_t cfgidx)
   }
   pdev->pClassData = USBD_malloc(sizeof(USBD_MSC_BOT_HandleTypeDef));
   s_hmsc = (USBD_MSC_BOT_HandleTypeDef *)pdev->pClassData;
+  s_pdev = pdev;
 
   if (pdev->pClassData == NULL)
   {

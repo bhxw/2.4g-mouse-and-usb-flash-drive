@@ -2,7 +2,7 @@
  * @file usbd_composite.c
  * @brief HID(Mouse) + MSC(U盘) 复合设备类包装器
  *
- * 说明：旧版 Core 仅支持单类（pdev->pClass / pClassData 各一个），
+ * 旧版 Core 仅支持单类（pdev->pClass / pClassData 各一个），
  * 本包装器在回调入口处临时切换 pClassData 指向对应子类句柄，
  * 回调返回后恢复为 HID 句柄（USBD_HID_SendReport 由任务直接调用，需默认指向 HID）。
  */
@@ -12,8 +12,8 @@
 #include "usbd_ctlreq.h"
 #include "usbd_hid.h"
 #include "usbd_msc.h"
-#include "usb_storage.h"
-#include "console.h"
+
+#define COMP_DEBUG  0
 
 /* ---------------- 复合配置描述符（FS）：9 配置 + 25 HID 接口 + 23 MSC 接口 = 57 ---------------- */
 #define COMP_CFG_SIZ      57U
@@ -66,30 +66,26 @@ static uint8_t comp_init(USBD_HandleTypeDef *pdev, uint8_t cfgidx)
 {
     uint8_t st;
 
+#if COMP_DEBUG
     dbg_printf("[CMP] init cfg=%u\r\n", (unsigned)cfgidx);
+#endif
 
-    /* HID 先注册并初始化（默认 pClassData = HID 句柄） */
     st = USBD_HID.Init(pdev, cfgidx);
     s_hid_h = pdev->pClassData;
-    dbg_printf("[CMP] hid init st=%u\r\n", (unsigned)st);
     if (st != USBD_OK)
     {
         return USBD_FAIL;
     }
 
-    /* MSC：注册介质层后初始化 */
-    USBD_MSC_RegisterStorage(pdev, &USBD_SD_Storage_fops);
     st = USBD_MSC.Init(pdev, cfgidx);
     s_msc_h = pdev->pClassData;
-    dbg_printf("[CMP] msc init st=%u\r\n", (unsigned)st);
     if (st != USBD_OK)
     {
-        /* MSC 失败不拖垮 HID：继续配置，仅 MSC 不可用 */
         set_child(pdev, s_hid_h);
         return USBD_OK;
     }
 
-    set_child(pdev, s_hid_h);   /* 默认指向 HID */
+    set_child(pdev, s_hid_h);
     return USBD_OK;
 }
 
@@ -108,12 +104,13 @@ static uint8_t comp_setup(USBD_HandleTypeDef *pdev, USBD_SetupReqTypedef *req)
     uint8_t ret;
     int is_msc_class;
 
-    /* MSC 类请求：GET_MAX_LUN(0xFE) / BOT_RESET(0xFF) —— 部分主机 wIndex 发 0，需按 bRequest 兜底 */
     is_msc_class = (req->bRequest == BOT_GET_MAX_LUN) || (req->bRequest == BOT_RESET);
 
+#if COMP_DEBUG
     dbg_printf("[CMP] setup t=%02X r=%02X v=%04X i=%04X\r\n",
                (unsigned)req->bmRequest, (unsigned)req->bRequest,
                (unsigned)req->wValue, (unsigned)req->wIndex);
+#endif
 
     if (is_msc_class || req->wIndex == COMP_IFACE_MSC)
     {
@@ -144,8 +141,6 @@ static uint8_t comp_setup(USBD_HandleTypeDef *pdev, USBD_SetupReqTypedef *req)
 
 static uint8_t comp_data_in(USBD_HandleTypeDef *pdev, uint8_t epnum)
 {
-    static uint16_t s_cnt = 0;
-
     switch (epnum & 0x7FU)
     {
     case (HID_EPIN_ADDR & 0x7FU):
@@ -153,10 +148,6 @@ static uint8_t comp_data_in(USBD_HandleTypeDef *pdev, uint8_t epnum)
         (void)USBD_HID.DataIn(pdev, epnum);
         break;
     case (MSC_EPIN_ADDR & 0x7FU):
-        if (s_cnt < 20)
-        {
-            dbg_printf("[MSC] IN ep2 n=%u\r\n", (unsigned)++s_cnt);
-        }
         set_child(pdev, s_msc_h);
         (void)USBD_MSC.DataIn(pdev, epnum);
         break;
@@ -169,21 +160,10 @@ static uint8_t comp_data_in(USBD_HandleTypeDef *pdev, uint8_t epnum)
 
 static uint8_t comp_data_out(USBD_HandleTypeDef *pdev, uint8_t epnum)
 {
-    static uint16_t s_cnt = 0;
-
     if ((epnum & 0x7FU) == (MSC_EPOUT_ADDR & 0x7FU))
     {
-        uint8_t r;
-        if (s_cnt < 20)
-        {
-            dbg_printf("[MSC] OUT ep%u n=%u\r\n", (unsigned)(epnum & 0x7FU), (unsigned)++s_cnt);
-        }
         set_child(pdev, s_msc_h);
-        r = USBD_MSC.DataOut(pdev, epnum);
-        if (s_cnt < 20)
-        {
-            dbg_printf("[MSC] OUT ret=%u\r\n", (unsigned)r);
-        }
+        (void)USBD_MSC.DataOut(pdev, epnum);
         set_child(pdev, s_hid_h);
     }
     return USBD_OK;
@@ -201,15 +181,15 @@ static uint8_t *comp_get_fs_cfg_desc(uint16_t *length)
     return s_cfg_fs;
 }
 
-static uint8_t *comp_get_other_cfg_desc(uint16_t *length)
+static uint8_t *comp_get_other_speed_cfg_desc(uint16_t *length)
 {
     *length = sizeof(s_cfg_fs);
     return s_cfg_fs;
 }
 
-static uint8_t *comp_get_qualifier_desc(uint16_t *length)
+static uint8_t *comp_get_device_qualifier_desc(uint16_t *length)
 {
-    *length = 0U;
+    *length = 0;
     return NULL;
 }
 
@@ -218,15 +198,15 @@ USBD_ClassTypeDef USBD_Composite =
     comp_init,
     comp_deinit,
     comp_setup,
-    NULL,   /* EP0_TxSent */
-    NULL,   /* EP0_RxReady */
+    NULL,                                   /* EP0_TxSent */
+    NULL,                                   /* EP0_RxReady */
     comp_data_in,
     comp_data_out,
-    NULL,   /* SOF */
-    NULL,   /* IsoINIncomplete */
-    NULL,   /* IsoOUTIncomplete */
+    NULL,                                   /* SOF */
+    NULL,                                   /* IsoINIncomplete */
+    NULL,                                   /* IsoOUTIncomplete */
     comp_get_hs_cfg_desc,
     comp_get_fs_cfg_desc,
-    comp_get_other_cfg_desc,
-    comp_get_qualifier_desc,
+    comp_get_other_speed_cfg_desc,
+    comp_get_device_qualifier_desc,
 };

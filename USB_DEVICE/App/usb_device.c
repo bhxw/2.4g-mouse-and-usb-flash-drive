@@ -23,10 +23,11 @@
 #include "usb_device.h"
 #include "usbd_core.h"
 #include "usbd_desc.h"
-#include "usbd_hid.h"
+#include "usbd_msc.h"
+#include "usb_storage.h"
 
 /* USER CODE BEGIN Includes */
-
+#include "usbd_composite.h"
 /* USER CODE END Includes */
 
 /* USER CODE BEGIN PV */
@@ -71,7 +72,11 @@ void MX_USB_DEVICE_Init(void)
   {
     Error_Handler();
   }
-  if (USBD_RegisterClass(&hUsbDeviceFS, &USBD_HID) != USBD_OK)
+  if (USBD_RegisterClass(&hUsbDeviceFS, &USBD_Composite) != USBD_OK)
+  {
+    Error_Handler();
+  }
+  if (USBD_MSC_RegisterStorage(&hUsbDeviceFS, &USBD_SD_Storage_fops) != USBD_OK)
   {
     Error_Handler();
   }
