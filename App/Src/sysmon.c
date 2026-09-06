@@ -28,9 +28,32 @@ void sysmon_rx_idle(void) { s_rx_idle++; }
 
 void sysmon_init_hw(void)
 {
-    /* IWDG 暂禁用：LSI/IWDG 周期在实机与假设不符导致异常复位（见 BOOT 标记卡点）。
-     * 待系统跑通并实测 LSI 频率后，再按实测重开看门狗。 */
-    s_iwdg_on = 0U;
+    uint32_t t0;
+    uint16_t guard;
+
+    /* 启动 LSI，限时等待；异常则放弃看门狗，绝不阻塞启动 */
+    __HAL_RCC_LSI_ENABLE();
+    t0 = HAL_GetTick();
+    while (__HAL_RCC_GET_FLAG(RCC_FLAG_LSIRDY) == RESET)
+    {
+        if ((HAL_GetTick() - t0) > 200U)
+        {
+            return;
+        }
+    }
+    /* IWDG 配置：LSI≈40kHz / 128 ≈312Hz，RLR=3000 -> 溢出约 9.6s（余量足） */
+    IWDG->KR = 0x5555u;
+    IWDG->PR = 0x05u;              /* 预分频 128 */
+    IWDG->RLR = 3000u;
+    guard = 1000u;
+    while ((IWDG->SR != 0u) && (--guard != 0u)) { }   /* 有界等待 SR 清零 */
+    if (guard == 0u)
+    {
+        return;                    /* IWDG 寄存器异常：放弃启用 */
+    }
+    IWDG->KR = 0xCCCCu;            /* 启动计数 */
+    IWDG->KR = 0xAAAAu;            /* 立即喂一次 */
+    s_iwdg_on = 1U;
 }
 
 static void iwdg_feed(void)
