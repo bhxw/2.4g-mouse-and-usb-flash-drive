@@ -31,6 +31,7 @@
 #include "app_main.h"
 #include "nrf_demo.h"
 #include "nrf24l01.h"
+#include "console.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -103,13 +104,18 @@ int main(void)
   MX_SPI1_Init();
   /* USER CODE BEGIN 2 */
   /* NRF_Demo_Init: NRF24L01 初始化/自检/RX_Mode(由 DEMO_ROLE 决定) + OLED 状态显示 */
+  dbg_printf("[BOOT] demo-ok\r\n");
   NRF_Demo_Init();
+  dbg_printf("[BOOT] nrf-ok\r\n");
 
   sysmon_init_hw();
+  dbg_printf("[BOOT] iwdg-ok\r\n");
 
   /* 启动 RTOS 应用任务（内部启动调度器，不返回） */
+  dbg_printf("[BOOT] app-start\r\n");
   app_start();
   /* USER CODE END 2 */
+/* USER CODE END 2 */
 
   /* Infinite loop */
   /* USER CODE BEGIN WHILE */
