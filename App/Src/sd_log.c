@@ -156,13 +156,6 @@ static void log_task(void *param)
         /* --- 挂载成功：消费队列并批量写盘 --- */
         while (1)
         {
-            /* 主机已枚举(配置完成)时暂停落盘，避免与 MSC 争用 SD */
-            if (hUsbDeviceFS.dev_state == USBD_STATE_CONFIGURED)
-            {
-                while (rtos_queue_recv(s_log_q, qbuf, 0) == 0) { /* drop */ }
-                rtos_delay(200);
-                continue;
-            }
             /* 非阻塞清空队列 */
             while (rtos_queue_recv(s_log_q, qbuf, 0) == 0)
             {
