@@ -11,10 +11,14 @@ TX 发射端(MPU6050+nRF24L01)  --2.4G-->  RX 本仓库(nRF24L01) --> USB HID �
 
 ## 当前状态
 
-- USB HID+MSC 复合设备（分支 `feature/composite-hid-msc`）：SCSI 延迟处理已实现（SD 读写在 FreeRTOS 任务中执行，不阻塞 USB ISR），初始化顺序修正（SD preinit 在 USB 启动前），编译通过，待硬件验证
+- ✅ **USB HID+MSC 复合设备已验证可用**（分支 `feature/composite-hid-msc`）
+  - 鼠标：nRF 收包 → HID 上报，正常工作
+  - U盘：Windows 正常识别，文件读写正确
+  - SCSI 延迟处理已实现（SD 读写在 FreeRTOS 任务中执行，不阻塞 USB ISR）
+  - 已知性能瓶颈：SD SPI 阻塞式传输，~4MB 文件约 2-3 分钟（后续可 DMA + 多块命令优化）
 - 已实现：nRF 收包 → HID 鼠标上报 + SD 卡 → MSC U盘，复合描述符 57B（HID EP1 + MSC EP2）
-- 升级进行中：FatFs + SD(SPI1) 日志、FreeRTOS 任务化 → 见里程碑
-- 代码评审遗留问题与修复归属：见 `项目架构.md` §7 与 `开发日志.md`
+- 已实现：FatFs + SD(SPI1) 日志链路（DATA.LOG 定长二进制记录）
+- 待完成：M4 可靠性收尾（看门狗/24h 测试/功耗）；后续优化见 `接收端开发方案.md` §7
 
 ## 目录结构
 
@@ -56,8 +60,8 @@ TX 发射端(MPU6050+nRF24L01)  --2.4G-->  RX 本仓库(nRF24L01) --> USB HID �
 |---|---|---|
 | M0 | 时间基准单源化 + 外设重构 + 清理 | ✅ tag m0a/m0b |
 | M1 | FreeRTOS 任务化骨架 + rtos 抽象层 | ✅ tag m1 |
-| M2 | SD(SPI1) 驱动 + FatFs 日志链路(DATA.LOG) | ✅ tag m2a/m2b/m2（待硬件实测） |
-| M3 | USB MSC+HID 复合（A 内联 → B 任务化） | A+B 编译通过，待硬件验证 |
+| M2 | SD(SPI1) 驱动 + FatFs 日志链路(DATA.LOG) | ✅ tag m2a/m2b/m2 |
+| M3 | USB MSC+HID 复合（A 内联 → B 任务化） | ✅ 硬件验证通过 |
 | M4 | 可靠性收尾（看门狗/24h/功耗） | 待开始 |
 | M5 | 自研微内核替换（可选） | 待开始 |
 
