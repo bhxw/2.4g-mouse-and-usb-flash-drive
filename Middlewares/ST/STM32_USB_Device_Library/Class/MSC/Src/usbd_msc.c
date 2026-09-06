@@ -356,8 +356,20 @@ uint8_t USBD_MSC_DeInit(USBD_HandleTypeDef *pdev,
 * @param  req: USB request
 * @retval status
 */
+extern void dbg_printf(const char *fmt, ...);
+
 uint8_t USBD_MSC_Setup(USBD_HandleTypeDef *pdev, USBD_SetupReqTypedef *req)
 {
+  static unsigned s_dbg = 0;
+
+  if (s_dbg < 12)
+  {
+    s_dbg++;
+    dbg_printf("[MSC-S] t=%02X r=%02X v=%04X i=%04X l=%u\r\n",
+               (unsigned)req->bmRequest, (unsigned)req->bRequest,
+               (unsigned)req->wValue, (unsigned)req->wIndex,
+               (unsigned)req->wLength);
+  }
   USBD_MSC_BOT_HandleTypeDef *hmsc = usbd_msc_get_hmsc();
   uint8_t ret = USBD_OK;
   uint16_t status_info = 0U;
