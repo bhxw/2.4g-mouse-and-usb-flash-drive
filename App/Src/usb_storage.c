@@ -42,7 +42,7 @@ static int8_t storage_sd_ensure(void)
 /* SCSI INQUIRY 数据（36 字节） */
 static const int8_t s_inquiry[] =
 {
-    0x00, 0x00, 0x02, 0x02,                 /* 直接访问 / SCSI-2 */
+    0x00, 0x80, 0x02, 0x02,                 /* 直接访问 / RMB=1(可移动) / SCSI-2 */
     (36 - 5),                               /* additional length */
     0x00, 0x00, 0x00,
     'S', 'T', 'M', '3', '2', ' ', ' ', ' ',            /* Vendor: 8 */
