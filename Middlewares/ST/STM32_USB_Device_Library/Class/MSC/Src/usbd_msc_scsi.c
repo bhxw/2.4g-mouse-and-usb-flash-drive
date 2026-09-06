@@ -183,13 +183,7 @@ static int8_t SCSI_TestUnitReady(USBD_HandleTypeDef  *pdev, uint8_t lun, uint8_t
 {
   USBD_MSC_BOT_HandleTypeDef  *hmsc = usbd_msc_get_hmsc();
 
-  /* case 9 : Hi > D0 */
-  if (hmsc->cbw.dDataLength != 0U)
-  {
-    SCSI_SenseCode(pdev, hmsc->cbw.bLUN, ILLEGAL_REQUEST, INVALID_CDB);
-
-    return -1;
-  }
+  (void)params;
 
   if ((usbd_msc_get_fops())->IsReady(lun) != 0)
   {
