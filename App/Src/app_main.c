@@ -13,6 +13,7 @@
 #include "usb_device.h"
 #include "usbd_hid.h"   /* USBD_HID_SendReport */
 #include "console.h"
+#include "sysmon.h"
 
 extern USBD_HandleTypeDef hUsbDeviceFS;
 
@@ -35,6 +36,7 @@ static void rf_rx_task(void *param)
     {
         if (NRF24L01_RxPacket((uint8_t *)&pack) == 0)
         {
+            sysmon_rx_ok();
             mouseout[0] = pack.buttons;
             mouseout[1] = pack.x;
             mouseout[2] = pack.y;
@@ -49,6 +51,10 @@ static void rf_rx_task(void *param)
 
             sd_log_write_packet(&pack);
         }
+        else
+        {
+            sysmon_rx_idle();
+        }
         rtos_delay(RF_POLL_MS);
     }
 }
@@ -61,6 +67,9 @@ void app_start(void)
 
     /* M2c：SD 日志任务（无卡时周期打印 mount fail 重试，不阻塞鼠标） */
     sd_log_start();
+
+    /* M4：系统监控任务（运行统计/栈水位/链路计数/喂狗） */
+    sysmon_start();
 
     rtos_scheduler_start();
 

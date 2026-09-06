@@ -8,6 +8,7 @@
 
 #include <stdarg.h>
 #include <stdio.h>
+#include <string.h>
 
 void dbg_printf(const char *fmt, ...)
 {
@@ -28,4 +29,17 @@ void dbg_printf(const char *fmt, ...)
         n = (int)sizeof(buf);
     }
     (void)HAL_UART_Transmit(&huart1, (uint8_t *)buf, (uint16_t)n, HAL_MAX_DELAY);
+}
+
+void dbg_puts(const char *s)
+{
+    uint16_t n = (uint16_t)strlen(s);
+
+    while (n > 0U)
+    {
+        uint16_t chunk = (n > 128U) ? 128U : n;
+        (void)HAL_UART_Transmit(&huart1, (uint8_t *)s, chunk, HAL_MAX_DELAY);
+        s += chunk;
+        n = (uint16_t)(n - chunk);
+    }
 }
