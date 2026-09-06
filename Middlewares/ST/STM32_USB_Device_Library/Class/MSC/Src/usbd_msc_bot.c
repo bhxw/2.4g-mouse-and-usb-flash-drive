@@ -279,12 +279,27 @@ static void  MSC_BOT_CBW_Decode(USBD_HandleTypeDef  *pdev)
 * @param  len: Data Length
 * @retval None
 */
+extern void dbg_printf(const char *fmt, ...);
+
 static void  MSC_BOT_SendData(USBD_HandleTypeDef *pdev, uint8_t *pbuf,
                               uint16_t len)
 {
   USBD_MSC_BOT_HandleTypeDef  *hmsc = usbd_msc_get_hmsc();
+  static unsigned s_dbg = 0;
 
   uint16_t length = (uint16_t)MIN(hmsc->cbw.dDataLength, len);
+
+  if ((hmsc->cbw.CB[0] == 0x12U) && (s_dbg < 4))
+  {
+    s_dbg++;
+    dbg_printf("[INQ] dlen=%lu tx=%u\r\n",
+               (unsigned long)hmsc->cbw.dDataLength, (unsigned)length);
+    for (uint16_t i = 0; i < length && i < 24; i++)
+    {
+      dbg_printf("%02X ", (unsigned)pbuf[i]);
+    }
+    dbg_printf("\r\n");
+  }
 
   hmsc->csw.dDataResidue -= len;
   hmsc->csw.bStatus = USBD_CSW_CMD_PASSED;
