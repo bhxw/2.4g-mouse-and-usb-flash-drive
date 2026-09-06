@@ -42,3 +42,6 @@ MicroSD*用户文档.pdf
 _*.py
 out.csv
 build_cli.log
+
+# 抓包/临时
+*bus hound*
