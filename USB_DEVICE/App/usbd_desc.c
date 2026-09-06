@@ -65,10 +65,10 @@
 #define USBD_VID     1155
 #define USBD_LANGID_STRING     1033
 #define USBD_MANUFACTURER_STRING     "STMicroelectronics"
-#define USBD_PID_FS     22315
-#define USBD_PRODUCT_STRING_FS     "STM32 Human interface"
-#define USBD_CONFIGURATION_STRING_FS     "HID Config"
-#define USBD_INTERFACE_STRING_FS     "HID Interface"
+#define USBD_PID_FS     22336      /* 0x5740：测试分支专用，避开旧缓存 */
+#define USBD_PRODUCT_STRING_FS     "STM32 Mass Storage"
+#define USBD_CONFIGURATION_STRING_FS     "MSC Config"
+#define USBD_INTERFACE_STRING_FS     "MSC Interface"
 
 /* USER CODE BEGIN PRIVATE_DEFINES */
 
@@ -158,7 +158,7 @@ __ALIGN_BEGIN uint8_t USBD_FS_DeviceDesc[USB_LEN_DEV_DESC] __ALIGN_END =
   HIBYTE(USBD_VID),           /*idVendor*/
   LOBYTE(USBD_PID_FS),        /*idProduct*/
   HIBYTE(USBD_PID_FS),        /*idProduct*/
-  0x00,                       /*bcdDevice rel. 2.00*/
+  0x01,                       /*bcdDevice rel. 2.01 (LE: 01 02) */
   0x02,
   USBD_IDX_MFC_STR,           /*Index of manufacturer  string*/
   USBD_IDX_PRODUCT_STR,       /*Index of product string*/
