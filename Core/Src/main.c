@@ -96,7 +96,6 @@ int main(void)
   /* Initialize all configured peripherals */
   MX_GPIO_Init();
   MX_DMA_Init();
-  MX_USB_DEVICE_Init();
   MX_USART1_UART_Init();
   MX_TIM3_Init();
   MX_SPI2_Init();
@@ -105,7 +104,12 @@ int main(void)
   /* NRF_Demo_Init: NRF24L01 初始化/自检/RX_Mode(由 DEMO_ROLE 决定) + OLED 状态显示 */
   NRF_Demo_Init();
 
+  /* SD 预初始化必须在 USB 启动前完成，否则主机枚举时 SD 尚未就绪 */
   usb_storage_preinit();
+  /* 创建 SCSI 延迟处理信号队列（READ10/WRITE10 的 SD 操作在任务中执行） */
+  usb_storage_msc_task_init();
+
+  MX_USB_DEVICE_Init();
 
   /* 启动 RTOS 应用任务（内部启动调度器，不返回） */
   app_start();

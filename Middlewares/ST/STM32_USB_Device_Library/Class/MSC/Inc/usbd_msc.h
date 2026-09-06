@@ -56,8 +56,8 @@ extern "C" {
 #define USB_MSC_CONFIG_DESC_SIZ      32
 
 
-#define MSC_EPIN_ADDR                0x81U
-#define MSC_EPOUT_ADDR               0x01U
+#define MSC_EPIN_ADDR                0x82U
+#define MSC_EPOUT_ADDR               0x02U
 
 /**
   * @}
@@ -111,6 +111,7 @@ uint8_t  USBD_MSC_RegisterStorage(USBD_HandleTypeDef   *pdev,
                                   USBD_StorageTypeDef *fops);
 USBD_MSC_BOT_HandleTypeDef *usbd_msc_get_hmsc(void);
 USBD_StorageTypeDef        *usbd_msc_get_fops(void);
+USBD_HandleTypeDef         *usbd_msc_get_pdev(void);
 /**
   * @}
   */

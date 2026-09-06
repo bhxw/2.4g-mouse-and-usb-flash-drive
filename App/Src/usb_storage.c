@@ -8,6 +8,8 @@
 #include "sd_spi.h"
 #include "console.h"
 #include "main.h"       /* HAL_GetTick */
+#include "rtos_api.h"
+#include "usbd_msc_scsi.h"
 
 #include <string.h>
 
@@ -70,6 +72,15 @@ void usb_storage_preinit(void)
 #endif
 }
 
+void usb_storage_msc_task_init(void)
+{
+    rtos_queue_handle_t q = NULL;
+    if (rtos_queue_create(2, 1, &q) == 0)
+    {
+        scsi_msc_set_signal_queue(q);
+    }
+}
+
 static int8_t sd_storage_init(uint8_t lun)
 {
     (void)lun;
@@ -126,7 +137,6 @@ static int8_t sd_storage_read(uint8_t lun, uint8_t *buf, uint32_t blk_addr, uint
     {
         return -1;
     }
-    dbg_printf("[S]RD a=%u l=%u\r\n", (unsigned)blk_addr, (unsigned)blk_len);
     for (uint16_t i = 0; i < blk_len; i++)
     {
         if (SD_ReadBlock(blk_addr + i, buf + (uint32_t)i * SD_BLOCK_SIZE) != 0)
@@ -149,7 +159,6 @@ static int8_t sd_storage_write(uint8_t lun, uint8_t *buf, uint32_t blk_addr, uin
     {
         return -1;
     }
-    dbg_printf("[S]WR a=%u l=%u\r\n", (unsigned)blk_addr, (unsigned)blk_len);
     for (uint16_t i = 0; i < blk_len; i++)
     {
         if (SD_WriteBlock(blk_addr + i, buf + (uint32_t)i * SD_BLOCK_SIZE) != 0)
