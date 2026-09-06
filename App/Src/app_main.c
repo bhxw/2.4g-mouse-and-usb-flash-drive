@@ -12,13 +12,18 @@
 #include "sd_log.h"
 #include "usb_device.h"
 #include "usbd_hid.h"   /* USBD_HID_SendReport */
+#include "usb_storage.h"
 #include "console.h"
 
 extern USBD_HandleTypeDef hUsbDeviceFS;
+extern void scsi_msc_task_entry(void *param);
 
 #define RF_TASK_STACK_WORDS   160
 #define RF_TASK_PRIORITY      5
 #define RF_POLL_MS            10
+
+#define SCSI_MSC_TASK_STACK_WORDS  256
+#define SCSI_MSC_TASK_PRIORITY     4
 
 static rtos_task_handle_t s_rf_task;
 
@@ -38,7 +43,8 @@ static void rf_rx_task(void *param)
             mouseout[0] = pack.buttons;
             mouseout[1] = pack.x;
             mouseout[2] = pack.y;
-            /* MSC-only 测试：不注册 HID，仅收包写日志 */
+            mouseout[3] = 0;
+            USBD_HID_SendReport(&hUsbDeviceFS, (uint8_t *)mouseout, 4);
             (void)last_busy_print;
 
             sd_log_write_packet(&pack);
@@ -52,6 +58,14 @@ void app_start(void)
     /* 创建任务失败不阻塞后续：调度器启动时低优先级任务仍可运行 */
     (void)rtos_task_create("rf_rx", rf_rx_task, NULL,
                            RF_TASK_STACK_WORDS, RF_TASK_PRIORITY, &s_rf_task);
+
+    /* SCSI 延迟处理任务：SD 读/写在任务上下文执行，不阻塞 USB ISR */
+    {
+        rtos_task_handle_t scsi_task = NULL;
+        (void)rtos_task_create("scsi_msc", scsi_msc_task_entry, NULL,
+                               SCSI_MSC_TASK_STACK_WORDS, SCSI_MSC_TASK_PRIORITY,
+                               &scsi_task);
+    }
 
     /* M2c：SD 日志任务（无卡时周期打印 mount fail 重试，不阻塞鼠标） */
     sd_log_start();

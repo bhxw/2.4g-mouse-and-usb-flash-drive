@@ -60,9 +60,10 @@ static void sd_cs_low(void)
 
 static uint8_t sd_xfer(uint8_t b)
 {
-    uint8_t rx = 0xFF;
-    (void)HAL_SPI_TransmitReceive(&hspi1, &b, &rx, 1, 10);
-    return rx;
+    while (!(SPI1->SR & SPI_SR_TXE)) {}
+    *(__IO uint8_t *)&SPI1->DR = b;
+    while (!(SPI1->SR & SPI_SR_RXNE)) {}
+    return *(__IO uint8_t *)&SPI1->DR;
 }
 
 /* 直接寄存器操作：全双工 SPI 单字节传输（发送 tx，同时接收）

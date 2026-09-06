@@ -381,6 +381,16 @@
           <GroupName>App</GroupName>
           <Files>
             <File>
+              <FileName>usbd_composite.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>..\App\Src\usbd_composite.c</FilePath>
+            </File>
+            <File>
+              <FileName>usbd_composite.h</FileName>
+              <FileType>5</FileType>
+              <FilePath>..\App\Inc\usbd_composite.h</FilePath>
+            </File>
+            <File>
               <FileName>usb_storage.c</FileName>
               <FileType>1</FileType>
               <FilePath>..\App\Src\usb_storage.c</FilePath>

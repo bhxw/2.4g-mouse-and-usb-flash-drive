@@ -11,9 +11,9 @@ TX 发射端(MPU6050+nRF24L01)  --2.4G-->  RX 本仓库(nRF24L01) --> USB HID �
 
 ## 当前状态
 
-- 功能原型可运行：nRF 收包 → USB HID 鼠标上报
-- USB MSC U盘隔离验证中（分支 `test/msc-only`）：纯 MSC 枚举+数据传输已通过 Bus Hound 抓包确认，SPI 批量传输优化已完成，待硬件验证识别速度
-- 升级进行中：USB MSC+HID 复合、FatFs + SD(SPI1) 日志、FreeRTOS 任务化 → 见里程碑
+- USB HID+MSC 复合设备（分支 `feature/composite-hid-msc`）：SCSI 延迟处理已实现（SD 读写在 FreeRTOS 任务中执行，不阻塞 USB ISR），初始化顺序修正（SD preinit 在 USB 启动前），编译通过，待硬件验证
+- 已实现：nRF 收包 → HID 鼠标上报 + SD 卡 → MSC U盘，复合描述符 57B（HID EP1 + MSC EP2）
+- 升级进行中：FatFs + SD(SPI1) 日志、FreeRTOS 任务化 → 见里程碑
 - 代码评审遗留问题与修复归属：见 `项目架构.md` §7 与 `开发日志.md`
 
 ## 目录结构
@@ -57,7 +57,7 @@ TX 发射端(MPU6050+nRF24L01)  --2.4G-->  RX 本仓库(nRF24L01) --> USB HID �
 | M0 | 时间基准单源化 + 外设重构 + 清理 | ✅ tag m0a/m0b |
 | M1 | FreeRTOS 任务化骨架 + rtos 抽象层 | ✅ tag m1 |
 | M2 | SD(SPI1) 驱动 + FatFs 日志链路(DATA.LOG) | ✅ tag m2a/m2b/m2（待硬件实测） |
-| M3 | USB MSC+HID 复合（A 内联 → B 任务化） | 待开始 |
+| M3 | USB MSC+HID 复合（A 内联 → B 任务化） | A+B 编译通过，待硬件验证 |
 | M4 | 可靠性收尾（看门狗/24h/功耗） | 待开始 |
 | M5 | 自研微内核替换（可选） | 待开始 |
 
