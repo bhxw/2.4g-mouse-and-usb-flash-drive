@@ -587,8 +587,21 @@ void USBD_LL_Delay(uint32_t Delay)
   */
 void *USBD_static_malloc(uint32_t size)
 {
-  static uint32_t mem[(sizeof(USBD_HID_HandleTypeDef)/4)+1];/* On 32-bit boundary */
-  return mem;
+  /* 静态池：同时容纳 HID 句柄与 MSC 句柄（MSC 内含 512B bot_data），顺序分配 */
+  static uint8_t mem[1024];
+  static uint16_t off = 0;
+  uint32_t aligned;
+
+  aligned = (size + 3U) & ~3U;   /* 4 字节对齐 */
+  if ((uint32_t)off + aligned > sizeof(mem))
+  {
+    return NULL;                  /* 池耗尽：由调用方判空处理 */
+  }
+  {
+    void *p = (void *)&mem[off];
+    off = (uint16_t)(off + aligned);
+    return p;
+  }
 }
 
 /**
