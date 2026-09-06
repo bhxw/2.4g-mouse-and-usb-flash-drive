@@ -21,29 +21,41 @@
 
 static volatile uint32_t s_rx_ok = 0;
 static volatile uint32_t s_rx_idle = 0;
+static volatile uint8_t s_iwdg_on = 0;
 
 void sysmon_rx_ok(void)   { s_rx_ok++; }
 void sysmon_rx_idle(void) { s_rx_idle++; }
 
 void sysmon_init_hw(void)
 {
-    /* 启动 LSI 并配置 IWDG：LSI≈40kHz，/128≈312Hz，重载 2000 -> 溢出约 6.4s */
+    uint32_t t0;
+
+    /* 启动 LSI；限时等待，起不来则跳过看门狗，绝不阻塞启动 */
     __HAL_RCC_LSI_ENABLE();
+    t0 = HAL_GetTick();
     while (__HAL_RCC_GET_FLAG(RCC_FLAG_LSIRDY) == RESET)
     {
+        if ((HAL_GetTick() - t0) > 200U)
+        {
+            return;   /* LSI 异常：不启用 IWDG，继续引导 */
+        }
     }
-    /* 直接操作 IWDG：LSI≈40kHz / 128 ≈312Hz，重装 2000 -> 溢出约 6.4s */
-    IWDG->KR = 0x5555u;      /* 解锁登记 */
+    /* IWDG：LSI≈40kHz / 128 ≈312Hz，RLR=2000 -> 溢出约 6.4s */
+    IWDG->KR = 0x5555u;      /* 解锁 */
     IWDG->PR = 0x05u;        /* 预分频 128 */
-    IWDG->RLR = 2000u;       /* 重装值 */
+    IWDG->RLR = 2000u;
     while (IWDG->SR != 0u) { }
     IWDG->KR = 0xCCCCu;      /* 启动计数 */
-    IWDG->KR = 0xAAAAu;      /* 立即喝一次 */
+    IWDG->KR = 0xAAAAu;      /* 立即喂一次 */
+    s_iwdg_on = 1U;
 }
 
 static void iwdg_feed(void)
 {
-    IWDG->KR = 0xAAAAu;      /* 重新加载 */
+    if (s_iwdg_on)
+    {
+        IWDG->KR = 0xAAAAu;  /* 重新装载 */
+    }
 }
 
 /* 空闲钩子：最可靠的喂狗点（configUSE_IDLE_HOOK=1） */
