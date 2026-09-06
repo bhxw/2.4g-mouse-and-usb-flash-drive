@@ -7,12 +7,12 @@
 
 #include "sd_spi.h"
 #include "console.h"
-
-/* 诊断：1=U盘不碰SD(固定容量/空读写)；0=真实SD */
-#define SD_BYPASS_TEST  0
 #include "main.h"       /* HAL_GetTick */
 
 #include <string.h>
+
+/* 诊断：1=U盘不碰SD(固定容量/空读写)；0=真实SD */
+#define SD_BYPASS_TEST  0
 
 static volatile uint32_t s_last_active_ms = 0;
 static uint32_t s_cap_blocks = 0;
@@ -29,6 +29,16 @@ uint32_t usb_storage_last_active_ms(void)
     return s_last_active_ms;
 }
 
+/* 访问前确保 SD 已初始化（usbstor 可能比 sd_log 早问容量） */
+static int8_t storage_sd_ensure(void)
+{
+    if (!SD_Ready())
+    {
+        return (SD_Init() == 0) ? 0 : -1;
+    }
+    return 0;
+}
+
 /* SCSI INQUIRY 数据（36 字节） */
 static const int8_t s_inquiry[] =
 {
@@ -40,20 +50,30 @@ static const int8_t s_inquiry[] =
     '1', '.', '0', '0',                     /* Rev: 4 */
 };
 
-/* 访问前确保 SD 已初始化（usbstor 可能比 sd_log 早问容量） */
-static int8_t storage_sd_ensure(void)
+void usb_storage_preinit(void)
 {
-    if (!SD_Ready())
+#if !SD_BYPASS_TEST
+    uint32_t blocks = 0;
+    if (storage_sd_ensure() == 0 && SD_GetBlockCount(&blocks) == 0)
     {
-        return (SD_Init() == 0) ? 0 : -1;
+        s_cap_blocks = blocks;
+        s_cap_size = SD_BLOCK_SIZE;
+        s_cap_ok = 1;
+        dbg_printf("[CAP] preinit ok blocks=%lu\r\n", (unsigned long)blocks);
     }
-    return 0;
+    else
+    {
+        dbg_printf("[CAP] preinit fail\r\n");
+    }
+#else
+    (void)0;
+#endif
 }
 
 static int8_t sd_storage_init(uint8_t lun)
 {
     (void)lun;
-    return 0;   /* SD 由 sd_log 或首次访问时初始化 */
+    return 0;
 }
 
 static int8_t sd_storage_get_capacity(uint8_t lun, uint32_t *block_num, uint16_t *block_size)
@@ -85,7 +105,7 @@ static int8_t sd_storage_get_capacity(uint8_t lun, uint32_t *block_num, uint16_t
 static int8_t sd_storage_is_ready(uint8_t lun)
 {
     (void)lun;
-    return 0;   /* 0 = 就绪（简化；SD 访问失败会通过 Read/Write 返回） */
+    return 0;   /* 0 = 就绪（简化） */
 }
 
 static int8_t sd_storage_is_write_protected(uint8_t lun)
@@ -96,7 +116,7 @@ static int8_t sd_storage_is_write_protected(uint8_t lun)
 
 static int8_t sd_storage_read(uint8_t lun, uint8_t *buf, uint32_t blk_addr, uint16_t blk_len)
 {
-    (void)lun; (void)blk_addr; (void)blk_len;
+    (void)lun;
     usb_storage_ping();
 #if SD_BYPASS_TEST
     memset(buf, 0, (size_t)blk_len * SD_BLOCK_SIZE);
@@ -119,7 +139,7 @@ static int8_t sd_storage_read(uint8_t lun, uint8_t *buf, uint32_t blk_addr, uint
 
 static int8_t sd_storage_write(uint8_t lun, uint8_t *buf, uint32_t blk_addr, uint16_t blk_len)
 {
-    (void)lun; (void)buf; (void)blk_addr; (void)blk_len;
+    (void)lun;
     usb_storage_ping();
 #if SD_BYPASS_TEST
     return 0;   /* 空写 */

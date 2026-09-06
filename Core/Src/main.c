@@ -28,6 +28,7 @@
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
 #include "app_main.h"
+#include "usb_storage.h"
 #include "nrf_demo.h"
 #include "nrf24l01.h"
 /* USER CODE END Includes */
@@ -103,6 +104,9 @@ int main(void)
   /* USER CODE BEGIN 2 */
   /* NRF_Demo_Init: NRF24L01 初始化/自检/RX_Mode(由 DEMO_ROLE 决定) + OLED 状态显示 */
   NRF_Demo_Init();
+
+  /* 预初始化 SD并缓存容量（usbstor 问容量时不再进 ISR 读 SD） */
+  usb_storage_preinit();
 
   /* 启动 RTOS 应用任务（内部启动调度器，不返回） */
   app_start();

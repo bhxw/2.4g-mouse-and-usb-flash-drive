@@ -14,4 +14,7 @@ extern USBD_StorageTypeDef USBD_SD_Storage_fops;
 void usb_storage_ping(void);
 uint32_t usb_storage_last_active_ms(void);
 
+/** 主程序调用（非ISR）：预初始化 SD 并缓存容量，避免 usbstor 在中断里读 SD */
+void usb_storage_preinit(void);
+
 #endif /* __USB_STORAGE_H */
