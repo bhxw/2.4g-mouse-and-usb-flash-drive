@@ -38,14 +38,8 @@ static void rf_rx_task(void *param)
             mouseout[0] = pack.buttons;
             mouseout[1] = pack.x;
             mouseout[2] = pack.y;
-            if (USBD_HID_SendReport(&hUsbDeviceFS, (uint8_t *)mouseout, sizeof(mouseout)) != USBD_OK)
-            {
-                if (HAL_GetTick() - last_busy_print > 2000U)
-                {
-                    dbg_printf("[RF] HID report busy\r\n");
-                    last_busy_print = HAL_GetTick();
-                }
-            }
+            /* MSC-only 测试：不注册 HID，仅收包写日志 */
+            (void)last_busy_print;
 
             sd_log_write_packet(&pack);
         }
