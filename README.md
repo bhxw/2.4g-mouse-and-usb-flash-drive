@@ -1,6 +1,6 @@
 # 2.4G 空中鼠标与 USB 复合接收器（RX / nrfrx-usb）
 
-基于 STM32F103C8T6 的 2.4G 空中鼠标系统**接收端**：接收发射端（TX）经 nRF24L01 发来的鼠标数据包，以 USB HID 上报主机；正在升级为 **USB MSC+HID 复合设备（U盘 + 鼠标接收器）** 并增加 SD 卡数据记录。
+基于 STM32F103C8T6 的 2.4G 空中鼠标系统**接收端**：接收发射端（TX）经 nRF24L01 发来的鼠标数据包，以 **USB MSC+HID 复合设备（U盘 + 鼠标接收器）** 上报主机，同时把传感器/位移数据写入 SD 卡日志。
 
 ```
 TX 发射端(MPU6050+nRF24L01)  --2.4G-->  RX 本仓库(nRF24L01) --> USB HID 主机
@@ -11,21 +11,21 @@ TX 发射端(MPU6050+nRF24L01)  --2.4G-->  RX 本仓库(nRF24L01) --> USB HID �
 
 ## 当前状态
 
-- ✅ **USB HID+MSC 复合设备已验证可用**（分支 `feature/composite-hid-msc`）
-  - 鼠标：nRF 收包 → HID 上报，正常工作
-  - U盘：Windows 正常识别，文件读写正确
-  - SCSI 延迟处理已实现（SD 读写在 FreeRTOS 任务中执行，不阻塞 USB ISR）
-  - 已知性能瓶颈：SD SPI 阻塞式传输，~4MB 文件约 2-3 分钟（后续可 DMA + 多块命令优化）
-- 已实现：nRF 收包 → HID 鼠标上报 + SD 卡 → MSC U盘，复合描述符 57B（HID EP1 + MSC EP2）
-- 已实现：FatFs + SD(SPI1) 日志链路（DATA.LOG 定长二进制记录）
-- 待完成：M4 可靠性收尾（看门狗/24h 测试/功耗）；后续优化见 `接收端开发方案.md` §7
+- ✅ **USB HID+MSC 复合设备（U盘+鼠标接收器）** 已合入 main 并硬件验证
+  - 鼠标：nRF 收包 → HID 上报正常；U盘：Windows 识别、文件读写正确
+  - SCSI 延迟处理：SD 读写在 FreeRTOS `scsi_msc` 任务中执行，不阻塞 USB ISR
+  - 复合描述符 57B（HID EP1 + MSC EP2）；MSC 介质层=整张 SD 卡
+  - 已知瓶颈：SD SPI 阻塞式传输，拷贝 ~4MB 约 2-3 分钟（已实测多块/DMA 收益有限，暂缓）
+- ✅ **系统可靠性**：FreeRTOS 运行统计(CPU%)/任务栈高水位/链路丢包率监控；IWDG 看门狗在线（有界等待防启动卡死，长跑验证通过）
+- ✅ 数据记录：FatFs(R0.16) + SD(SPI1 直接寄存器) 日志链路（DATA.LOG 定长二进制 + Python 解析）
+- 待办：24h 长跑与功耗量化（需实机）；其余优化见 `接收端开发方案.md`
 
 ## 目录结构
 
 ```
 ├── App/                  ★ 应用层（用户代码，原 MDK-ARM/user 迁出）
-│   ├── Src/               NRF24L01 / NRF_Demo / OLED 源文件
-│   └── Inc/              对应头文件（NRF24L01/NRF_Demo/OLED）
+│   ├── Src/               app_main / rf·scsi·sd_log·sysmon 任务、NRF24L01/NRF_Demo/OLED、sd_spi/diskio、usbd_composite/usb_storage、rtos_api
+│   └── Inc/               对应头文件
 ├── Core/                 CubeMX 内核（main、中断、外设初始化）
 ├── Drivers/              CMSIS + STM32F1xx HAL
 ├── Middlewares/          ST USB 设备库（HID 类）
@@ -43,7 +43,7 @@ TX 发射端(MPU6050+nRF24L01)  --2.4G-->  RX 本仓库(nRF24L01) --> USB HID �
 - MCU：STM32F103C8T6（72MHz / 64KB Flash / 20KB RAM），HSE 8MHz，SWD 调试
 - USB：PA11/PA12（FS 设备）
 - nRF24L01：SPI2 = PB13/14/15，CE=PB0，CSN=PB1，IRQ=PB5
-- SD（已实现）：SPI1 默认映射 PA5/6/7 + CS=PB12，模块 VCC=5V；阻塞式批量 HAL_SPI 传输
+- SD（已实现）：SPI1 默认映射 PA5/6/7 + CS=PB12，模块 VCC=5V；SPI 直接寄存器全双工传输
 - OLED：PB10/11 软件 I2C；UART1（PA9/10）printf 调试
 - 详细引脚/变更见 `接收端开发方案.md` §1
 
@@ -60,6 +60,9 @@ TX 发射端(MPU6050+nRF24L01)  --2.4G-->  RX 本仓库(nRF24L01) --> USB HID �
 |---|---|---|
 | M0 | 时间基准单源化 + 外设重构 + 清理 | ✅ tag m0a/m0b |
 | M1 | FreeRTOS 任务化骨架 + rtos 抽象层 | ✅ tag m1 |
+| M2 | SD(SPI1)+FatFs 日志链路 DATA.LOG | ✅ tag m2a/m2b/m2（硬件实测） |
+| M3 | USB MSC+HID 复合设备（SCSI 任务化） | ✅ tag m3（已合入 main，硬件验证） |
+| M4 | 可靠性：sysmon 监控 + IWDG 看门狗 | ✅ 编译+长跑通过（24h/功耗待实测） |
 | M5 | 自研微内核替换（可选） | 待开始 |
 
 验收标准见 `接收端开发方案.md`。
