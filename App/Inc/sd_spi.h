@@ -36,4 +36,14 @@ uint8_t SD_GetBlockCount(uint32_t *blocks);
 /** 已初始化成功？ */
 uint8_t SD_Ready(void);
 
+/**
+ * @brief 取走并清零轮询圈数计数器（纯测量用）
+ *
+ * sd_wait_ready 与 0xFE 令牌循环每转一圈正好是 SPI 上一个字节的时间
+ * （444ns @18MHz），所以圈数即时间，精度远高于 HAL_GetTick 的 1ms。
+ * 用途：把单块 SD 耗时拆成 线上字节 + 卡忙/卡读延迟 + CPU 轮询开销 三段。
+ */
+uint32_t SD_TakeWaitReadyPolls(void);
+uint32_t SD_TakeTokenPolls(void);
+
 #endif /* __SD_SPI_H */

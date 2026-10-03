@@ -27,20 +27,37 @@ static uint8_t  s_cap_ok = 0;
  * 累加到 256 块再打印，一是摊薄量化误差，二是把 dbg_printf 自身的
  * ~2ms 阻塞开销（console.c:31 走 HAL_UART_Transmit + HAL_MAX_DELAY）
  * 从每块 1 次降到每 256 块 1 次。
+ *
+ * 每块时间拆成两段测：sd（SD_ReadBlock / SD_WriteChunk 内部）+ gap（两次调用之间）。
+ * 校验式 sd_avg + gap_avg ≈ 墙钟/块数，闭合了预算才算成立。
+ * SD 段再靠 sd_spi.c 的轮询圈数计数器细分为 线上字节 / 卡忙 / CPU 轮询开销。
  */
 #define STAT_FLUSH_BLOCKS   256u
 
 typedef struct
 {
     uint32_t cnt;
-    uint64_t sum;   /* 累计周期数 */
-    uint32_t min;   /* 周期数 */
-    uint32_t max;   /* 周期数 */
+    uint64_t sum;     /* 累计 SD 侧周期数 */
+    uint32_t min;     /* 周期数 */
+    uint32_t max;     /* 周期数 */
+    uint64_t gap;     /* 累计块间间隔周期数（本次入口 - 上次出口） */
+    uint32_t gap_n;   /* gap 样本数 */
 } sd_stat_t;
 
-static sd_stat_t s_rd_stat = {0, 0, 0xFFFFFFFFu, 0};
-static sd_stat_t s_wr_stat = {0, 0, 0xFFFFFFFFu, 0};
+static sd_stat_t s_rd_stat = {0, 0, 0xFFFFFFFFu, 0, 0, 0};
+static sd_stat_t s_wr_stat = {0, 0, 0xFFFFFFFFu, 0, 0, 0};
 static uint32_t  s_wr_sessions = 0;   /* 本窗口内 SD_WriteBegin 成功次数 */
+
+/* 块间间隔探针：这段窗口里 EP2 已经重新挂好 PrepareReceive（usbd_msc_scsi.c:105），
+ * 设备随时可收，NAK 期在 SD 那 620us 里面而不是 gap 里。所以 gap 是纯
+ * USB 传输 + 主机 pacing + memcpy + 队列唤醒的时间 —— 也正是双缓冲重叠能吃掉的那部分。
+ *
+ * armed=0 表示还没有"上一次出口"，首个样本必须跳过：否则开机到首次写入之间的几百秒
+ * 会污染平均，且 CYCCNT 是 32 位、59.6s 就回绕，那个减法结果毫无意义。 */
+static uint32_t s_rd_last_exit;
+static uint8_t  s_rd_gap_armed;
+static uint32_t s_wr_last_exit;
+static uint8_t  s_wr_gap_armed;
 
 static void stat_dwt_init(void)
 {
@@ -57,33 +74,50 @@ static void stat_add(sd_stat_t *st, uint32_t cyc)
     if (cyc > st->max) st->max = cyc;
 }
 
-/* sessions != 0 时附带会话统计：blk/sess 是判断 CMD25 是否真的在流式工作的关键指标
- * —— 接近 256 说明一个会话吃下了整个窗口；等于 1 说明每块都在重开会话，多块白做。 */
-static void stat_report(const char *tag, sd_stat_t *st, uint32_t sessions)
+static void stat_add_gap(sd_stat_t *st, uint32_t cyc)
+{
+    st->gap += cyc;
+    st->gap_n++;
+}
+
+/* 每 256 块仍然只打一行（不增加打印次数，免得和 sysmon 撞 UART 被 HAL_BUSY 静默丢掉）。
+ * sd=avg/min/max；gap=每块平均；poll_tag/polls=本窗口内的轮询圈数总数
+ * （打总数不打平均，免得整数除法把 <1 的值吃掉）；bps=blk/sess。
+ *
+ * sessions != 0 时才打印 bps：它是判断 CMD25 有没有真在流式工作的关键指标 ——
+ * 接近 256 说明一个会话吃下了整个窗口；等于 1 说明每块都在重开会话，多块白做。
+ * 整个字段消失则说明会话跨窗口一直开着（比 256 更好）。 */
+static void stat_report(const char *tag, sd_stat_t *st, uint32_t sessions,
+                        const char *poll_tag, uint32_t polls)
 {
     uint32_t usp = SystemCoreClock / 1000000u;   /* 每微秒周期数 */
     if (usp == 0u) usp = 1u;
 
     if (sessions != 0u)
     {
-        dbg_printf("[SD-%s] n=%lu avg=%luus min=%luus max=%luus tot=%lums sess=%lu blk/sess=%lu\r\n",
+        dbg_printf("[SD-%s] n=%lu sd=%lu/%lu/%luus gap=%luus %s=%lu bps=%lu tot=%lums\r\n",
                    tag,
                    (unsigned long)st->cnt,
                    (unsigned long)(st->sum / st->cnt / usp),
                    (unsigned long)(st->min / usp),
                    (unsigned long)(st->max / usp),
-                   (unsigned long)(st->sum / (SystemCoreClock / 1000u)),
-                   (unsigned long)sessions,
-                   (unsigned long)(st->cnt / sessions));
+                   (unsigned long)(st->gap / st->gap_n / usp),
+                   poll_tag,
+                   (unsigned long)polls,
+                   (unsigned long)(st->cnt / sessions),
+                   (unsigned long)(st->sum / (SystemCoreClock / 1000u)));
     }
     else
     {
-        dbg_printf("[SD-%s] n=%lu avg=%luus min=%luus max=%luus tot=%lums\r\n",
+        dbg_printf("[SD-%s] n=%lu sd=%lu/%lu/%luus gap=%luus %s=%lu tot=%lums\r\n",
                    tag,
                    (unsigned long)st->cnt,
                    (unsigned long)(st->sum / st->cnt / usp),
                    (unsigned long)(st->min / usp),
                    (unsigned long)(st->max / usp),
+                   (unsigned long)(st->gap / st->gap_n / usp),
+                   poll_tag,
+                   (unsigned long)polls,
                    (unsigned long)(st->sum / (SystemCoreClock / 1000u)));
     }
 
@@ -91,6 +125,8 @@ static void stat_report(const char *tag, sd_stat_t *st, uint32_t sessions)
     st->sum = 0u;
     st->min = 0xFFFFFFFFu;
     st->max = 0u;
+    st->gap = 0u;
+    st->gap_n = 0u;
 }
 
 void usb_storage_ping(void)
@@ -200,6 +236,7 @@ static int8_t sd_storage_is_write_protected(uint8_t lun)
 
 static int8_t sd_storage_read(uint8_t lun, uint8_t *buf, uint32_t blk_addr, uint16_t blk_len)
 {
+    uint32_t t_entry = DWT->CYCCNT;   /* 入口即取，gap 要含 storage_sd_ensure 的时间 */
     (void)lun;
     usb_storage_ping();
 #if SD_BYPASS_TEST
@@ -210,6 +247,12 @@ static int8_t sd_storage_read(uint8_t lun, uint8_t *buf, uint32_t blk_addr, uint
     {
         return -1;
     }
+    if (s_rd_gap_armed)
+    {
+        stat_add_gap(&s_rd_stat, t_entry - s_rd_last_exit);
+    }
+    s_rd_gap_armed = 1u;
+
     for (uint16_t i = 0; i < blk_len; i++)
     {
         uint32_t t0 = DWT->CYCCNT;
@@ -219,9 +262,12 @@ static int8_t sd_storage_read(uint8_t lun, uint8_t *buf, uint32_t blk_addr, uint
         }
         stat_add(&s_rd_stat, DWT->CYCCNT - t0);
     }
+
+    s_rd_last_exit = DWT->CYCCNT;
     if (s_rd_stat.cnt >= STAT_FLUSH_BLOCKS)
     {
-        stat_report("RD", &s_rd_stat, 0u);
+        stat_report("RD", &s_rd_stat, 0u, "tokpoll", SD_TakeTokenPolls());
+        s_rd_last_exit = DWT->CYCCNT;   /* 打印自身 ~6.5ms 不算进下一次 gap */
     }
     return 0;
 #endif
@@ -229,6 +275,7 @@ static int8_t sd_storage_read(uint8_t lun, uint8_t *buf, uint32_t blk_addr, uint
 
 static int8_t sd_storage_write(uint8_t lun, uint8_t *buf, uint32_t blk_addr, uint16_t blk_len)
 {
+    uint32_t t_entry = DWT->CYCCNT;
     (void)lun;
     usb_storage_ping();
 #if SD_BYPASS_TEST
@@ -238,6 +285,12 @@ static int8_t sd_storage_write(uint8_t lun, uint8_t *buf, uint32_t blk_addr, uin
     {
         return -1;
     }
+    if (s_wr_gap_armed)
+    {
+        stat_add_gap(&s_wr_stat, t_entry - s_wr_last_exit);
+    }
+    s_wr_gap_armed = 1u;
+
     for (uint16_t i = 0; i < blk_len; i++)
     {
         uint32_t blk = blk_addr + i;
@@ -262,10 +315,13 @@ static int8_t sd_storage_write(uint8_t lun, uint8_t *buf, uint32_t blk_addr, uin
         }
         stat_add(&s_wr_stat, DWT->CYCCNT - t0);
     }
+
+    s_wr_last_exit = DWT->CYCCNT;
     if (s_wr_stat.cnt >= STAT_FLUSH_BLOCKS)
     {
-        stat_report("WR", &s_wr_stat, s_wr_sessions);
+        stat_report("WR", &s_wr_stat, s_wr_sessions, "wrpoll", SD_TakeWaitReadyPolls());
         s_wr_sessions = 0u;
+        s_wr_last_exit = DWT->CYCCNT;   /* 打印自身 ~6.5ms 不算进下一次 gap */
     }
     return 0;
 #endif

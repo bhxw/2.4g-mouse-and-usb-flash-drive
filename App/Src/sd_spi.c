@@ -61,6 +61,10 @@ static uint8_t s_ready = 0; /* 初始化成功标志 */
 static uint8_t  s_multi_open  = 0;  /* 1 = CS 已拉低且 CMD25 已被卡接受 */
 static uint32_t s_multi_next  = 0;  /* 会话期望的下一个块号（未做地址左移） */
 
+/* 轮询圈数计数器（纯测量，不影响功能）。每圈 = SPI 上一个字节时间 = 444ns@18MHz */
+static uint32_t s_poll_wait_ready = 0;  /* sd_wait_ready 圈数：卡写忙时间 */
+static uint32_t s_poll_token      = 0;  /* 0xFE 令牌等待圈数：卡读延迟 */
+
 static void sd_session_close(void);
 
 /* ---------------- 底层原语 ---------------- */
@@ -165,13 +169,16 @@ static uint8_t sd_acmd(uint8_t cmd, uint32_t arg)
     return sd_cmd(cmd, arg, 0x01);
 }
 
-/* 等待卡忙结束（返回 0 表示不忙 / 超时返回 1） */
+/* 等待卡忙结束（返回 0 表示不忙 / 超时返回 1）
+ * s_poll_wait_ready：每转一圈正好是 SPI 上一个字节的时间（一次 sd_xfer），
+ * 所以圈数 × 444ns(@18MHz) 即卡忙时间，精度远高于 HAL_GetTick 的 1ms。 */
 static uint8_t sd_wait_ready(uint32_t timeout_ms)
 {
     uint32_t t0 = HAL_GetTick();
     uint8_t r = 0xFF;
     do
     {
+        s_poll_wait_ready++;
         r = sd_xfer(0xFF);
         if (r == 0xFF)
         {
@@ -330,6 +337,23 @@ uint8_t SD_Ready(void)
     return s_ready;
 }
 
+/* 取走并清零轮询圈数计数器。
+ * 计数与取值可能分属不同任务（sd_log 也会走 sd_wait_ready），
+ * 读-清序列非原子，最坏丢几个计数，对测量结论无影响。 */
+uint32_t SD_TakeWaitReadyPolls(void)
+{
+    uint32_t n = s_poll_wait_ready;
+    s_poll_wait_ready = 0;
+    return n;
+}
+
+uint32_t SD_TakeTokenPolls(void)
+{
+    uint32_t n = s_poll_token;
+    s_poll_token = 0;
+    return n;
+}
+
 uint8_t SD_ReadBlock(uint32_t block, uint8_t *buf)
 {
     uint32_t t0;
@@ -348,10 +372,11 @@ uint8_t SD_ReadBlock(uint32_t block, uint8_t *buf)
         return SD_ERR_READ;
     }
 
-    /* 等待起始令牌 0xFE */
+    /* 等待起始令牌 0xFE（圈数 = 卡的 NAND 读延迟，见 s_poll_token） */
     t0 = HAL_GetTick();
     do
     {
+        s_poll_token++;
         b = sd_xfer(0xFF);
         if (b == 0xFE)
         {
