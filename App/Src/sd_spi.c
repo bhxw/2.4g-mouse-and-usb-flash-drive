@@ -18,7 +18,11 @@ extern SPI_HandleTypeDef hspi1;
 #define SD_CS_PIN       GPIO_PIN_12
 
 #define SPI1_PRESC_LOW  SPI_BAUDRATEPRESCALER_256   /* 初始化 <=400kHz(72/256=281k) */
-#define SPI1_PRESC_HIGH SPI_BAUDRATEPRESCALER_4     /* 数据传输 18MHz */
+/* 【临时诊断，测完改回 /4】/8=9MHz，仍在 SD 规格(25MHz)内。
+ * 用途：判定实测到的 1188ns/数据字节里，那 744ns 非线上时间是 CPU 循环开销
+ * 还是 SCK 真在跑。SCK 减半后 CPU 开销不变、线上时间翻倍，两种假设给出的
+ * 写 sd 预测值差 46%（854us vs 1244us），一眼可分。 */
+#define SPI1_PRESC_HIGH SPI_BAUDRATEPRESCALER_8     /* 数据传输 9MHz */
 
 /* ---------------- 错误码 ---------------- */
 #define SD_ERR_NONE        0
@@ -170,8 +174,10 @@ static uint8_t sd_acmd(uint8_t cmd, uint32_t arg)
 }
 
 /* 等待卡忙结束（返回 0 表示不忙 / 超时返回 1）
- * s_poll_wait_ready：每转一圈正好是 SPI 上一个字节的时间（一次 sd_xfer），
- * 所以圈数 × 444ns(@18MHz) 即卡忙时间，精度远高于 HAL_GetTick 的 1ms。 */
+ * s_poll_wait_ready：每转一圈一次 sd_xfer，即一个字节时间。
+ * 2026-10-03 实测标定（18MHz）：每圈 1480ns = 线上 444ns + CPU 1036ns，
+ * CPU 那部分含本循环每次迭代的 HAL_GetTick() 调用；数据循环每字节 1188ns。
+ * 两参数模型在 6 个窗口上盲测误差 <1%。 */
 static uint8_t sd_wait_ready(uint32_t timeout_ms)
 {
     uint32_t t0 = HAL_GetTick();

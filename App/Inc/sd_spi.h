@@ -39,9 +39,11 @@ uint8_t SD_Ready(void);
 /**
  * @brief 取走并清零轮询圈数计数器（纯测量用）
  *
- * sd_wait_ready 与 0xFE 令牌循环每转一圈正好是 SPI 上一个字节的时间
- * （444ns @18MHz），所以圈数即时间，精度远高于 HAL_GetTick 的 1ms。
- * 用途：把单块 SD 耗时拆成 线上字节 + 卡忙/卡读延迟 + CPU 轮询开销 三段。
+ * sd_wait_ready 与 0xFE 令牌循环每转一圈一次 sd_xfer，即一个字节时间。
+ * 2026-10-03 实测标定（18MHz）：轮询每圈 1480ns，数据循环每字节 1188ns，
+ * 其中纯线上时间都是 444ns，其余是 CPU 开销（轮询圈多出的一次 HAL_GetTick
+ * 调用约 300ns）。精度远高于 HAL_GetTick 的 1ms。
+ * 用途：把单块 SD 耗时拆成 线上字节 + 卡忙/卡读延迟 + CPU 开销 三段。
  */
 uint32_t SD_TakeWaitReadyPolls(void);
 uint32_t SD_TakeTokenPolls(void);
