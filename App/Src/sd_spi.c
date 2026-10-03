@@ -3,7 +3,9 @@
  * @brief SD 卡 SPI 底层驱动（SPI1 默认映射 PA5/6/7，CS=PB12）
  *
  * 时序参考：Arduino SdFat (Sd2Card)：CMD0 -> CMD8 -> ACMD41 -> CMD58(OCR) 判定 SDHC；
- * 读写使用 0xFE 起始令牌与忙等待。首版为阻塞(HAL_SPI_TransmitReceive)实现。
+ * 读写使用 0xFE/0xFC 起始令牌与忙等待。
+ * 单字节（命令/令牌/CRC/应答）走裸寄存器 sd_xfer，512 字节数据段走 DMA
+ * （DMA1_Channel2=SPI1_RX / Channel3=SPI1_TX，见 sd_dma_xfer）。
  */
 
 #include "sd_spi.h"
@@ -20,8 +22,8 @@ extern SPI_HandleTypeDef hspi1;
 #define SPI1_PRESC_LOW  SPI_BAUDRATEPRESCALER_256   /* 初始化 <=400kHz(72/256=281k) */
 /* /4=18MHz，是 SD 规格(25MHz)内的最大档位（/2=36MHz 超规）。
  * 2026-10-03 用 /4↔/8 对照实测：数据段每字节 1188ns 里只有 ~444ns 在线上，
- * 其余 ~766ns(55 周期) 是 sd_spi_fast_byte 的 CPU 开销 —— 即时钟再高也吃不动，
- * 要提速得让 512 字节数据段走 DMA，不是提 SCK。 */
+ * 其余 ~766ns(55 周期) 是 sd_xfer 两次 SR 轮询的 CPU 开销 —— 即时钟再高也吃不动。
+ * 解法是把 512 字节数据段交给 DMA（见下面的 sd_dma_xfer），而不是提 SCK。 */
 #define SPI1_PRESC_HIGH SPI_BAUDRATEPRESCALER_4     /* 数据传输 18MHz */
 
 /* ---------------- 错误码 ---------------- */
@@ -84,6 +86,11 @@ static void sd_cs_low(void)
     HAL_GPIO_WritePin(SD_CS_PORT, SD_CS_PIN, GPIO_PIN_RESET);
 }
 
+/* 直接寄存器操作：全双工 SPI 单字节传输（发送 tx，同时接收）
+ * 避免 HAL 每次调用的状态机开销（~5-10μs），保持 SPI 全双工模式不变。
+ * 2026-10-03 实测标定：每字节 1188ns，其中线上仅 444ns，其余 766ns(55 周期)
+ * 是这里两次 SR 轮询的 CPU 开销 —— 512 字节数据段因此改走上面的 DMA。
+ * 本函数只留给命令/令牌/CRC/应答这些单字节。 */
 static uint8_t sd_xfer(uint8_t b)
 {
     while (!(SPI1->SR & SPI_SR_TXE)) {}
@@ -92,32 +99,93 @@ static uint8_t sd_xfer(uint8_t b)
     return *(__IO uint8_t *)&SPI1->DR;
 }
 
-/* 直接寄存器操作：全双工 SPI 单字节传输（发送 tx，同时接收）
- * 避免 HAL 每次调用的状态机开销（~5-10μs），保持 SPI 全双工模式不变 */
-static inline uint8_t sd_spi_fast_byte(uint8_t tx)
+/* ---------------- 512 字节数据段 DMA ----------------
+ * 只有数据段走 DMA，命令/令牌/CRC/应答这些单字节仍走 sd_xfer。
+ *
+ * 为什么不用 HAL_SPI_TransmitReceive_DMA：HAL 会接管 hspi->State 并假定自己拥有
+ * 整次传输，而本文件其余部分全是裸寄存器操作（见 :89 的说明），混用会污染状态机；
+ * 更硬的限制是 HAL 要求收发两个缓冲区各 len 字节 —— 本项目 RAM 只剩 224B
+ * （map: RW_IRAM1 0x4f20/0x5000），拿不出 512B 的 0xFF 源和 512B 的丢弃槽。
+ * 直接编程 DMA1_Channel2(SPI1_RX)/Channel3(SPI1_TX)，用 MINC 开/关分别实现
+ * "变址搬进 buf"和"收发同一字节"，零额外 RAM。
+ *
+ * 通道无冲突：SD 用 SPI1(PA5/6/7)，2.4G 无线用 SPI2(PB13/14/15, NRF24L01.c:28)，
+ * DMA1_Channel2/3 只被 SPI1 占用（spi.c:127/:143）。
+ */
+#define SD_DMA_RX_CH      DMA1_Channel2   /* spi.c:127 hdma_spi1_rx */
+#define SD_DMA_TX_CH      DMA1_Channel3   /* spi.c:143 hdma_spi1_tx */
+#define SD_DMA_TIMEOUT_MS 100u            /* 512B@18MHz 线上只要 227us，纯防卡死 */
+
+/* CCR 基值：PSIZE/MSIZE 都是 00(byte，对齐 spi.c:131-132 的 PDATAALIGN_BYTE/
+ * MDATAALIGN_BYTE)，PL=01(medium，对齐 spi.c:134)，NORMAL(不置 CIRC)，
+ * DIR=1 表示内存->外设。EN 与 MINC 单独按次置。 */
+#define SD_DMA_CCR_RX     (DMA_CCR_PL_0)
+#define SD_DMA_CCR_TX     (DMA_CCR_DIR | DMA_CCR_PL_0)
+
+static uint8_t       s_dma_sink;         /* 写数据段的接收丢弃槽（1 字节，MINC 关） */
+static const uint8_t s_dma_dummy = 0xFF; /* 读数据段的发送源（1 字节常量，MINC 关） */
+
+/* IFCR 是只写寄存器，所以用 = 而不是 |=；写 CGIFx 会连带清掉该通道的
+ * TCIF/HTIF/TEIF（RM0008 14.3.2）。 */
+static void sd_dma_stop(void)
 {
-    while (!(SPI1->SR & SPI_SR_TXE)) {}
-    *(__IO uint8_t *)&SPI1->DR = tx;
-    while (!(SPI1->SR & SPI_SR_RXNE)) {}
-    return *(__IO uint8_t *)&SPI1->DR;
+    SD_DMA_TX_CH->CCR &= ~DMA_CCR_EN;
+    SD_DMA_RX_CH->CCR &= ~DMA_CCR_EN;
+    SPI1->CR2 &= ~(SPI_CR2_TXDMAEN | SPI_CR2_RXDMAEN);
+    DMA1->IFCR = DMA_IFCR_CGIF2 | DMA_IFCR_CGIF3;
 }
 
-/* 批量全双工读：发送 0xFF 时钟，同时接收数据到 buf */
-static void sd_spi_fast_read(uint8_t *buf, uint16_t len)
+/* 一次 len 字节的全双工 DMA。tx/rx 都允许是单字节（靠 tx_inc/rx_inc 关掉 MINC）。
+ * 返回 SD_ERR_NONE / SD_ERR_TIMEOUT。 */
+static uint8_t sd_dma_xfer(const uint8_t *tx, uint8_t *rx,
+                           uint32_t tx_inc, uint32_t rx_inc, uint16_t len)
 {
-    for (uint16_t i = 0; i < len; i++)
-    {
-        buf[i] = sd_spi_fast_byte(0xFF);
-    }
-}
+    uint32_t t0;
+    const uint32_t done = DMA_ISR_TCIF2 | DMA_ISR_TCIF3;
 
-/* 批量全双工写：发送 buf 数据，忽略接收 */
-static void sd_spi_fast_write(const uint8_t *buf, uint16_t len)
-{
-    for (uint16_t i = 0; i < len; i++)
+    sd_dma_stop();
+
+    /* DR 后 SR：这个顺序既排空上次残留的接收字节（否则本次第一个 DMA 请求会搬旧数据），
+     * 也是清 OVR 的唯一途径，与 __HAL_SPI_CLEAR_OVRFLAG 一致
+     * （stm32f1xx_hal_spi.h:426-430）。 */
+    (void)SPI1->DR;
+    (void)SPI1->SR;
+
+    SD_DMA_RX_CH->CPAR  = (uint32_t)&SPI1->DR;
+    SD_DMA_RX_CH->CMAR  = (uint32_t)rx;
+    SD_DMA_RX_CH->CNDTR = len;
+    SD_DMA_RX_CH->CCR   = SD_DMA_CCR_RX | (rx_inc ? DMA_CCR_MINC : 0u);
+
+    SD_DMA_TX_CH->CPAR  = (uint32_t)&SPI1->DR;
+    SD_DMA_TX_CH->CMAR  = (uint32_t)tx;
+    SD_DMA_TX_CH->CNDTR = len;
+    SD_DMA_TX_CH->CCR   = SD_DMA_CCR_TX | (tx_inc ? DMA_CCR_MINC : 0u);
+
+    SPI1->CR2 |= SPI_CR2_RXDMAEN | SPI_CR2_TXDMAEN;
+
+    /* RX 必须先开：TX 一使能立刻产生时钟，RXNE 若无通道接住会置 OVR 并丢字节 */
+    SD_DMA_RX_CH->CCR |= DMA_CCR_EN;
+    SD_DMA_TX_CH->CCR |= DMA_CCR_EN;
+
+    t0 = HAL_GetTick();
+    while (((DMA1->ISR & done) != done) && ((HAL_GetTick() - t0) < SD_DMA_TIMEOUT_MS))
     {
-        (void)sd_spi_fast_byte(buf[i]);
     }
+    if ((DMA1->ISR & done) != done)
+    {
+        sd_dma_stop();
+        return SD_ERR_TIMEOUT;
+    }
+
+    /* TX 的 TCIF 只说明 512 字节都进了 DR，最后一字节还在移位寄存器里；
+     * 不等 BSY 落下就返回，紧接着的 sd_xfer(CRC) 会和它撞车。 */
+    t0 = HAL_GetTick();
+    while ((SPI1->SR & SPI_SR_BSY) && ((HAL_GetTick() - t0) < SD_DMA_TIMEOUT_MS))
+    {
+    }
+
+    sd_dma_stop();
+    return SD_ERR_NONE;
 }
 
 /* 直接改写 SPI1 波特率预分频（不经过 HAL 状态机，避免 DeInit/Init 抖动） */
@@ -395,7 +463,12 @@ uint8_t SD_ReadBlock(uint32_t block, uint8_t *buf)
         return SD_ERR_TIMEOUT;
     }
 
-    sd_spi_fast_read(buf, SD_BLOCK_SIZE);
+    /* 512 字节数据段走 DMA：发常量 0xFF 当时钟（TX MINC 关），收进 buf（RX MINC 开） */
+    if (sd_dma_xfer(&s_dma_dummy, buf, 0u, 1u, (uint16_t)SD_BLOCK_SIZE) != SD_ERR_NONE)
+    {
+        sd_cs_high();
+        return SD_ERR_TIMEOUT;
+    }
     (void)sd_xfer(0xFF);  /* CRC 高字节 */
     (void)sd_xfer(0xFF);  /* CRC 低字节 */
     sd_cs_high();
@@ -420,7 +493,11 @@ uint8_t SD_WriteBlock(uint32_t block, const uint8_t *buf)
     }
 
     (void)sd_xfer(0xFE);  /* 起始令牌 */
-    sd_spi_fast_write(buf, SD_BLOCK_SIZE);
+    if (sd_dma_xfer(buf, &s_dma_sink, 1u, 0u, (uint16_t)SD_BLOCK_SIZE) != SD_ERR_NONE)
+    {
+        sd_cs_high();
+        return SD_ERR_TIMEOUT;
+    }
     (void)sd_xfer(0xFF);  /* CRC 高字节(忽略) */
     (void)sd_xfer(0xFF);  /* CRC 低字节(忽略) */
 
@@ -483,7 +560,12 @@ uint8_t SD_WriteChunk(uint32_t block, const uint8_t *buf)
     }
 
     (void)sd_xfer(SD_TOKEN_WRITE_MULTI);
-    sd_spi_fast_write(buf, SD_BLOCK_SIZE);
+    /* 512 字节数据段走 DMA：从 buf 变址搬出（TX MINC 开），收进 1 字节丢弃槽（RX MINC 关） */
+    if (sd_dma_xfer(buf, &s_dma_sink, 1u, 0u, (uint16_t)SD_BLOCK_SIZE) != SD_ERR_NONE)
+    {
+        sd_session_close();
+        return SD_ERR_TIMEOUT;
+    }
     (void)sd_xfer(0xFF);  /* CRC 高字节(SPI 模式默认关闭 CRC) */
     (void)sd_xfer(0xFF);  /* CRC 低字节 */
 
