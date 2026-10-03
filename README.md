@@ -15,10 +15,13 @@ TX 发射端(MPU6050+nRF24L01)  --2.4G-->  RX 本仓库(nRF24L01) --> USB HID �
   - 鼠标：nRF 收包 → HID 上报正常；U盘：Windows 识别、文件读写正确
   - SCSI 延迟处理：SD 读写在 FreeRTOS `scsi_msc` 任务中执行，不阻塞 USB ISR
   - 复合描述符 57B（HID EP1 + MSC EP2）；MSC 介质层=整张 SD 卡
-  - 已知瓶颈：**实测 3890KB 拷入 85 秒 = 45.8KB/s = 10.93ms/块**。真因是**每 512B 一次 CMD24 + 一次卡内编程等待**（`sd_wait_ready` 占 8.26ms/块 = **76%**，已实测），非命令开销；每块一次的调试 `dbg_printf` 另占 18%；USB 只占 3.8%（离 USB FS ~1.0MB/s 的墙还有 26 倍）。~~已实测多块/DMA 收益有限~~ ← **该结论无效**：`perf/sd-multiblock` 的开关只接了 `diskio.c`（日志路径），U 盘拷贝路径 `usb_storage.c` 从未被影响。**DMA 经实测两个方向都不值得做**（对写 0.7%，读 0~1ms/块已贴 USB 墙）。修订方向：CMD25 流式多块跨 CBW 轮次（0 RAM 增量，预期 85s → 8~15s），详见 `项目架构.md` 已知问题 #9~#11 与 `接收端开发方案.md` §7.1
-  - 🔧 **2026-10-03 已实现（分支 `perf/sd-cmd25-stream`，Keil 编译 0 Error/0 Warning，硬件未测）**：`sd_spi.c` 新增 `SD_WriteBegin`/`SD_WriteChunk`/`SD_WriteEnd`（时序按 `参考历程/SD/utility/Sd2Card.cpp:545-644`），会话跨多次 WRITE10 保持打开；`sd_cs_low()` 内自动补发 `0xFD`，任何其它 SD 事务都能终结遗留会话。每块 `dbg_printf` 探针改为 `DWT->CYCCNT` 累加、每 256 块汇总一行，其中 `blk/sess` 用于判定流式写是否真的连起来了（≈256 有效 / =1 白做）。⚠ **收益前提未验证**：若该卡不做内部缓冲，CMD25 提速接近 0
+  - ~~已知瓶颈：**实测 3890KB 拷入 85 秒 = 45.8KB/s = 10.93ms/块**~~ → **✅ 已解决（2026-10-03 实测：5283KB 拷入 17.5s = 302KB/s 端到端，6.6×；设备侧 1495µs/块）**。原诊断（`sd_wait_ready` 占 76%）正确，解法是 CMD25 流式多块跨 CBW 轮次（0 RAM 增量）；实测每块忙等待从 8.26ms 降到 **2.7µs**（`wrpoll=1536=6×256`）。剩下的 1495µs/块 = SD 622µs(42%) + 块间 USB gap 818µs(55%) + 打印 26µs，gap 已逼近 USB FS ~1.2MB/s 物理墙。~~**DMA 经实测两个方向都不值得做**（对写 0.7%，读 0~1ms/块已贴 USB 墙）~~ ← **⚠ 该结论已于 2026-10-03 整条撤回并已实现 DMA**：旧算法把每字节 CPU 开销估成 143ns，`/4↔/8` 对照实验解出的实测值是 **766ns/字节**（差约 5 倍）；且"读已贴墙"所依赖的"SD 读残差 ≈0"在算术上不可能成立（那张表 1.910+0.410 = 2.320ms 已超过它自己报的 2.244ms 总时长）。实测读 sd = **914µs/块 = 62%**。详见 `项目架构.md` 已知问题 #9~#11b 与 `接收端开发方案.md` §7.1
+  - 🔧 **2026-10-03 已实现（分支 `perf/sd-cmd25-stream`，Keil 编译 0 Error/0 Warning）**：
+    - **CMD25 流式多块写（已硬件实测通过）**：`sd_spi.c` 新增 `SD_WriteBegin`/`SD_WriteChunk`/`SD_WriteEnd`（时序按 `参考历程/SD/utility/Sd2Card.cpp:545-644`），会话跨多次 WRITE10 保持打开；`sd_cs_low()` 内自动补发 `0xFD`，任何其它 SD 事务都能终结遗留会话。原"⚠ 收益前提未验证"已证实成立
+    - **512B 数据段改走 SPI1 DMA（待硬件实测）**：`sd_dma_xfer()` 直接编程 DMA1_CH2(RX)/CH3(TX)，摘掉每字节 766ns 的 CPU 轮询。不用 HAL 的 `*_DMA` API（会接管 `hspi->State`，且要求收发缓冲区各 512B 而 RAM 只剩 224B），改用 MINC 开/关做到**零 RAM 增量**
+    - **测量探针**：每块 `dbg_printf` 改为 `DWT->CYCCNT` 累加、每 256 块汇总一行 `[SD-WR/RD] n=.. sd=avg/min/max gap=.. wrpoll/tokpoll=.. bps=.. tot=..ms`；`bps` 判定流式写是否真连起来（实测 49 个写窗口中 46 个该字段整行消失 = 会话跨窗口一直开着，比 ≈256 更好），`gap` 是纯 USB 段。两条路径的每块预算都闭合到 **2% 内**
 - ✅ **系统可靠性**：FreeRTOS 运行统计(CPU%)/任务栈高水位/链路丢包率监控；IWDG 看门狗在线（有界等待防启动卡死，长跑验证通过）
-- ✅ 数据记录：FatFs(R0.16) + SD(SPI1 直接寄存器) 日志链路（DATA.LOG 定长二进制 + Python 解析）
+- ✅ 数据记录：FatFs(R0.16) + SD(SPI1，512B 数据段 DMA) 日志链路（DATA.LOG 定长二进制 + Python 解析）
 - 待办：24h 长跑与功耗量化（需实机）；其余优化见 `接收端开发方案.md`
 
 ## 目录结构
@@ -44,7 +47,7 @@ TX 发射端(MPU6050+nRF24L01)  --2.4G-->  RX 本仓库(nRF24L01) --> USB HID �
 - MCU：STM32F103C8T6（72MHz / 64KB Flash / 20KB RAM），HSE 8MHz，SWD 调试
 - USB：PA11/PA12（FS 设备）
 - nRF24L01：SPI2 = PB13/14/15，CE=PB0，CSN=PB1，IRQ=PB5
-- SD（已实现）：SPI1 默认映射 PA5/6/7 + CS=PB12，模块 VCC=5V；SPI 直接寄存器全双工传输
+- SD（已实现）：SPI1 默认映射 PA5/6/7 + CS=PB12，模块 VCC=5V；单字节走裸寄存器全双工，512B 数据段走 DMA1_CH2(RX)/CH3(TX)
 - OLED：PB10/11 软件 I2C；UART1（PA9/10）printf 调试
 - 详细引脚/变更见 `接收端开发方案.md` §1
 
