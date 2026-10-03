@@ -18,11 +18,11 @@ extern SPI_HandleTypeDef hspi1;
 #define SD_CS_PIN       GPIO_PIN_12
 
 #define SPI1_PRESC_LOW  SPI_BAUDRATEPRESCALER_256   /* 初始化 <=400kHz(72/256=281k) */
-/* 【临时诊断，测完改回 /4】/8=9MHz，仍在 SD 规格(25MHz)内。
- * 用途：判定实测到的 1188ns/数据字节里，那 744ns 非线上时间是 CPU 循环开销
- * 还是 SCK 真在跑。SCK 减半后 CPU 开销不变、线上时间翻倍，两种假设给出的
- * 写 sd 预测值差 46%（854us vs 1244us），一眼可分。 */
-#define SPI1_PRESC_HIGH SPI_BAUDRATEPRESCALER_8     /* 数据传输 9MHz */
+/* /4=18MHz，是 SD 规格(25MHz)内的最大档位（/2=36MHz 超规）。
+ * 2026-10-03 用 /4↔/8 对照实测：数据段每字节 1188ns 里只有 ~444ns 在线上，
+ * 其余 ~766ns(55 周期) 是 sd_spi_fast_byte 的 CPU 开销 —— 即时钟再高也吃不动，
+ * 要提速得让 512 字节数据段走 DMA，不是提 SCK。 */
+#define SPI1_PRESC_HIGH SPI_BAUDRATEPRESCALER_4     /* 数据传输 18MHz */
 
 /* ---------------- 错误码 ---------------- */
 #define SD_ERR_NONE        0
