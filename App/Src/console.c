@@ -10,6 +10,13 @@
 #include <stdio.h>
 #include <string.h>
 
+static volatile uint32_t s_tx_drops;
+
+uint32_t dbg_console_drops(void)
+{
+    return s_tx_drops;
+}
+
 void dbg_printf(const char *fmt, ...)
 {
     char buf[128];
@@ -28,7 +35,10 @@ void dbg_printf(const char *fmt, ...)
     {
         n = (int)sizeof(buf);
     }
-    (void)HAL_UART_Transmit(&huart1, (uint8_t *)buf, (uint16_t)n, HAL_MAX_DELAY);
+    if (HAL_UART_Transmit(&huart1, (uint8_t *)buf, (uint16_t)n, HAL_MAX_DELAY) != HAL_OK)
+    {
+        s_tx_drops++;
+    }
 }
 
 void dbg_puts(const char *s)
@@ -38,7 +48,13 @@ void dbg_puts(const char *s)
     while (n > 0U)
     {
         uint16_t chunk = (n > 128U) ? 128U : n;
-        (void)HAL_UART_Transmit(&huart1, (uint8_t *)s, chunk, HAL_MAX_DELAY);
+
+        /* 失败也必须推进 s/n：这里没有重试缓冲，重试会和抢占方死锁在同一把
+         * UART 上。代价是丢一个 128 字节块，由 s_tx_drops 记账。 */
+        if (HAL_UART_Transmit(&huart1, (uint8_t *)s, chunk, HAL_MAX_DELAY) != HAL_OK)
+        {
+            s_tx_drops++;
+        }
         s += chunk;
         n = (uint16_t)(n - chunk);
     }

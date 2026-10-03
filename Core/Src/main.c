@@ -103,6 +103,29 @@ int main(void)
   MX_SPI2_Init();
   MX_SPI1_Init();
   /* USER CODE BEGIN 2 */
+  /* 复位原因。必须在清除标志之前读。RCC->CSR 位定义（RM0008 表 20，位号→掩码）：
+   *   bit23  0x00800000  RMVF      写 1 清除下面全部标志
+   *   bit24  0x01000000  PORRSTF   上电/掉电复位（F1 的 BOR 也落在这一位）
+   *   bit25  0x02000000  PINRSTF   NRST 引脚复位
+   *   bit26  0x04000000  SFTRSTF   软件复位
+   *   bit27  0x08000000  IWDGRSTF  独立看门狗复位
+   *   bit28  0x10000000  WWDGRSTF  窗口看门狗复位
+   *   bit29  0x20000000  LPRSTF    低功耗复位
+   * 判读：正常上电 ≈ por=1 pin=1（CSR 0x03000000）；若反复出现 iwdg=1
+   * （CSR 0x0A000000）说明在跑看门狗复位循环——那 [MON] 永远到不了 sec=10，
+   * 而每 280ms 一条的 [SD-*] 照样能打，正好是现在这个症状。
+   * por=1 且反复出现则指向 USB 供电轨跌落。 */
+  {
+    uint32_t csr = RCC->CSR;
+
+    dbg_printf("[BOOT] rst CSR=%08lX por=%u pin=%u sft=%u iwdg=%u wwdg=%u lp=%u\r\n",
+               (unsigned long)csr,
+               (unsigned)((csr >> 24) & 1U), (unsigned)((csr >> 25) & 1U),
+               (unsigned)((csr >> 26) & 1U), (unsigned)((csr >> 27) & 1U),
+               (unsigned)((csr >> 28) & 1U), (unsigned)((csr >> 29) & 1U));
+    __HAL_RCC_CLEAR_RESET_FLAGS();
+  }
+
   /* NRF_Demo_Init: NRF24L01 初始化/自检/RX_Mode(由 DEMO_ROLE 决定) + OLED 状态显示 */
   dbg_printf("[BOOT] demo-ok\r\n");
   NRF_Demo_Init();

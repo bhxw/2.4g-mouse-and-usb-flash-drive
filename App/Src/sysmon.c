@@ -14,6 +14,7 @@
 #include "FreeRTOS.h"
 #include "task.h"
 
+#include <stddef.h>
 #include <string.h>
 
 #define MON_STACK_WORDS   300
@@ -70,11 +71,52 @@ void vApplicationIdleHook(void)
     iwdg_feed();
 }
 
+/* configCHECK_FOR_STACK_OVERFLOW 原本是 0，栈溢出完全静默——不 assert、不复位、
+ * 只把下方内存踩坏后继续跑，正好能表现成"某个任务的输出莫名消失而系统还活着"。
+ * 改成 2（每次切换检查栈底 16 字节的 0xa5 填充）并在这里把它变成可见信号：
+ * 打印任务名后死循环，喂狗停止，IWDG 约 9.6s 后复位。
+ * 代价：每次上下文切换多一次 16 字节比较，约 1us，会让 gap 探针轻微偏大。 */
+void vApplicationStackOverflowHook(TaskHandle_t xTask, char *pcTaskName)
+{
+    (void)xTask;
+
+    dbg_printf("[FATAL] stack overflow: %s\r\n", pcTaskName);
+    taskDISABLE_INTERRUPTS();
+    for (;;)
+    {
+    }
+}
+
+/* FreeRTOS 11 里 vTaskList / vTaskGetRunTimeStats 不是函数，只是 task.h:2317
+ * 和 :2440 的兼容宏，展开成 xxxTasks(buf, configSTATS_BUFFER_MAX_LENGTH)。两个后果：
+ *   1) 宏名后面不带括号就不展开——当函数指针传会报 identifier undefined；
+ *   2) 那个长度宏在说谎：configSTATS_BUFFER_MAX_LENGTH = 0xFFFF
+ *      （FreeRTOSConfig.h:205），而 buf 只有 384 字节。内核的边界判断
+ *      （tasks.c:7394/7406）全部基于这个传入长度，所以保护形同虚设——任务数
+ *      一多就会静默写穿 sysmon 的栈。当前 5 个任务只占 135 字节（实测 len=135），
+ *      还没越界，但那是靠任务少，不是靠设计。
+ * 所以直接调真函数 vTaskListTasks / vTaskGetRunTimeStatistics，长度传 sizeof(buf)。 */
+typedef void (*mon_dump_fn)(char *, size_t);
+
+static void mon_dump(const char *tag, char *buf, size_t buflen, mon_dump_fn fn)
+{
+    dbg_printf("[MON] --- %s ---\r\n", tag);
+    /* 先清零：pvPortMalloc 失败时这两个函数一个字节都不写，
+     * 不清零就会把未初始化的栈内存当字符串发出去。 */
+    buf[0] = '\0';
+    fn(buf, buflen);
+    if (buf[0] != '\0')
+    {
+        dbg_puts(buf);
+    }
+}
+
 static void mon_task(void *param)
 {
     char buf[384];
     uint32_t last_cpu = 0;
     uint32_t last_stack = 0;
+    uint32_t last_mem = 0;
 
     (void)param;
 
@@ -82,24 +124,40 @@ static void mon_task(void *param)
     {
         uint32_t sec = HAL_GetTick() / 1000U;
 
-        dbg_printf("[MON] up=%lus rx_ok=%lu rx_idle=%lu link_loss_ratio=%lu%%\r\n",
+        /* 内存审计：每 60s 重打一次。高水位和 minEverFreeHeap 都是**累积最小值**，
+         * 只记录到采样那一刻为止的最深用量——所以必须在跑完拷贝之后再读一次，
+         * 开机 10s 的一次性快照完全不含 MSC 负载。实测对比：scsi_msc 空闲时只用
+         * 40 字，USB 挂载后是 152 字（余量 216 → 104），差 3.8 倍。
+         *
+         * 周期打印不会拖慢拷贝：本任务优先级 1 < scsi_msc 的 4，抢不动它，
+         * UART 忙等只发生在 scsi_msc 阻塞等 USB 的窗口里。撞车导致的丢行
+         * 由 dbg_console_drops() 计数，直接打在 drops= 字段里。
+         * 判据：heap free 若 >= 512B，MSC 双缓冲的第二块 shadow 可以直接
+         * pvPortMalloc，不必动只剩 208B 的链接器静态预算。 */
+        if (sec - last_mem >= 60U)
+        {
+            last_mem = sec;
+            dbg_printf("[MEM] heap free=%u minEver=%u total=%u drops=%lu\r\n",
+                       (unsigned)xPortGetFreeHeapSize(),
+                       (unsigned)xPortGetMinimumEverFreeHeapSize(),
+                       (unsigned)configTOTAL_HEAP_SIZE,
+                       (unsigned long)dbg_console_drops());
+        }
+
+        /*dbg_printf("[MON] up=%lus rx_ok=%lu rx_idle=%lu link_loss_ratio=%lu%%\r\n",
                    (unsigned long)sec, (unsigned long)s_rx_ok,
                    (unsigned long)s_rx_idle,
-                   (unsigned long)((s_rx_ok + s_rx_idle) ? (s_rx_idle * 100U) / (s_rx_ok + s_rx_idle) : 0U));
+                   (unsigned long)((s_rx_ok + s_rx_idle) ? (s_rx_idle * 100U) / (s_rx_ok + s_rx_idle) : 0U));*/
 
         if (sec - last_cpu >= 10U)
         {
             last_cpu = sec;
-            dbg_printf("[MON] --- CPU run-time stats ---\r\n");
-            vTaskGetRunTimeStats(buf);
-            dbg_puts(buf);
+            mon_dump("CPU run-time stats", buf, sizeof(buf), vTaskGetRunTimeStatistics);
         }
         if (sec - last_stack >= 20U)
         {
             last_stack = sec;
-            dbg_printf("[MON] --- task list (stack high-water) ---\r\n");
-            vTaskList(buf);
-            dbg_puts(buf);
+            mon_dump("task list (stack high-water)", buf, sizeof(buf), vTaskListTasks);
         }
 
         iwdg_feed();
@@ -109,6 +167,14 @@ static void mon_task(void *param)
 
 void sysmon_start(void)
 {
-    (void)rtos_task_create("sysmon", mon_task, NULL,
-                           MON_STACK_WORDS, MON_PRIORITY, NULL);
+    /* 原来这里 (void) 丢掉了返回值：任务创建失败（堆不够）是完全静默的，
+     * 表现就是"[MON] 一条都不打，但系统其他部分正常"。必须报出来。 */
+    int rc = rtos_task_create("sysmon", mon_task, NULL,
+                              MON_STACK_WORDS, MON_PRIORITY, NULL);
+
+    if (rc != 0)
+    {
+        dbg_printf("[BOOT] sysmon create FAIL rc=%d heap=%u\r\n", rc,
+                   (unsigned)xPortGetFreeHeapSize());
+    }
 }
