@@ -16,6 +16,7 @@ TX 发射端(MPU6050+nRF24L01)  --2.4G-->  RX 本仓库(nRF24L01) --> USB HID �
   - SCSI 延迟处理：SD 读写在 FreeRTOS `scsi_msc` 任务中执行，不阻塞 USB ISR
   - 复合描述符 57B（HID EP1 + MSC EP2）；MSC 介质层=整张 SD 卡
   - 已知瓶颈：**实测 3890KB 拷入 85 秒 = 45.8KB/s = 10.93ms/块**。真因是**每 512B 一次 CMD24 + 一次卡内编程等待**（`sd_wait_ready` 占 8.26ms/块 = **76%**，已实测），非命令开销；每块一次的调试 `dbg_printf` 另占 18%；USB 只占 3.8%（离 USB FS ~1.0MB/s 的墙还有 26 倍）。~~已实测多块/DMA 收益有限~~ ← **该结论无效**：`perf/sd-multiblock` 的开关只接了 `diskio.c`（日志路径），U 盘拷贝路径 `usb_storage.c` 从未被影响。**DMA 经实测两个方向都不值得做**（对写 0.7%，读 0~1ms/块已贴 USB 墙）。修订方向：CMD25 流式多块跨 CBW 轮次（0 RAM 增量，预期 85s → 8~15s），详见 `项目架构.md` 已知问题 #9~#11 与 `接收端开发方案.md` §7.1
+  - 🔧 **2026-10-03 已实现（分支 `perf/sd-cmd25-stream`，Keil 编译 0 Error/0 Warning，硬件未测）**：`sd_spi.c` 新增 `SD_WriteBegin`/`SD_WriteChunk`/`SD_WriteEnd`（时序按 `参考历程/SD/utility/Sd2Card.cpp:545-644`），会话跨多次 WRITE10 保持打开；`sd_cs_low()` 内自动补发 `0xFD`，任何其它 SD 事务都能终结遗留会话。每块 `dbg_printf` 探针改为 `DWT->CYCCNT` 累加、每 256 块汇总一行，其中 `blk/sess` 用于判定流式写是否真的连起来了（≈256 有效 / =1 白做）。⚠ **收益前提未验证**：若该卡不做内部缓冲，CMD25 提速接近 0
 - ✅ **系统可靠性**：FreeRTOS 运行统计(CPU%)/任务栈高水位/链路丢包率监控；IWDG 看门狗在线（有界等待防启动卡死，长跑验证通过）
 - ✅ 数据记录：FatFs(R0.16) + SD(SPI1 直接寄存器) 日志链路（DATA.LOG 定长二进制 + Python 解析）
 - 待办：24h 长跑与功耗量化（需实机）；其余优化见 `接收端开发方案.md`
