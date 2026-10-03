@@ -42,14 +42,16 @@ typedef struct
     uint32_t max;     /* 周期数 */
     uint64_t gap;     /* 累计块间间隔周期数（本次入口 - 上次出口） */
     uint32_t gap_n;   /* gap 样本数 */
+    uint32_t gap_min; /* 周期数。gap 均值会被长空闲拉爆（见 stat_add_gap），稳态值要看 min */
+    uint32_t gap_max; /* 周期数。逼近 59.6s 说明本窗口被空闲污染，均值不可用 */
 } sd_stat_t;
 
-static sd_stat_t s_rd_stat = {0, 0, 0xFFFFFFFFu, 0, 0, 0};
-static sd_stat_t s_wr_stat = {0, 0, 0xFFFFFFFFu, 0, 0, 0};
+static sd_stat_t s_rd_stat = {0, 0, 0xFFFFFFFFu, 0, 0, 0, 0xFFFFFFFFu, 0};
+static sd_stat_t s_wr_stat = {0, 0, 0xFFFFFFFFu, 0, 0, 0, 0xFFFFFFFFu, 0};
 static uint32_t  s_wr_sessions = 0;   /* 本窗口内 SD_WriteBegin 成功次数 */
 
 /* 块间间隔探针：这段窗口里 EP2 已经重新挂好 PrepareReceive（usbd_msc_scsi.c:105），
- * 设备随时可收，NAK 期在 SD 那 620us 里面而不是 gap 里。所以 gap 是纯
+ * 设备随时可收，NAK 期算在 sd 那一段里面而不是 gap 里。所以 gap 是纯
  * USB 传输 + 主机 pacing + memcpy + 队列唤醒的时间 —— 也正是双缓冲重叠能吃掉的那部分。
  *
  * armed=0 表示还没有"上一次出口"，首个样本必须跳过：否则开机到首次写入之间的几百秒
@@ -74,14 +76,21 @@ static void stat_add(sd_stat_t *st, uint32_t cyc)
     if (cyc > st->max) st->max = cyc;
 }
 
+/* gap 的均值单独看没有意义：CYCCNT 是 32 位、59.6s 回绕，一次长空闲（主机不来读/写）
+ * 就能把一个样本顶到接近回绕点，256 块平均下来整窗口失真 —— 实测出过 gap 均值 287ms
+ * 而稳态只有 542us 的窗口，反推至少有 2 条几十秒级的样本。min 才是稳态值，
+ * max 用来判断本窗口被污染了多少；max 逼近 59.6s 时应读作"≥59.6s，不可分辨"。 */
 static void stat_add_gap(sd_stat_t *st, uint32_t cyc)
 {
     st->gap += cyc;
     st->gap_n++;
+    if (cyc < st->gap_min) st->gap_min = cyc;
+    if (cyc > st->gap_max) st->gap_max = cyc;
 }
 
 /* 每 256 块仍然只打一行（不增加打印次数，免得和 sysmon 撞 UART 被 HAL_BUSY 静默丢掉）。
- * sd=avg/min/max；gap=每块平均；poll_tag/polls=本窗口内的轮询圈数总数
+ * sd=avg/min/max；gap=avg/min/max（同为每块：MSC_MEDIA_PACKET=512 使 blk_count 恒为 1，
+ * 一次调用只带一块，故 gap_n == 块数）；poll_tag/polls=本窗口内的轮询圈数总数
  * （打总数不打平均，免得整数除法把 <1 的值吃掉）；bps=blk/sess。
  *
  * sessions != 0 时才打印 bps：它是判断 CMD25 有没有真在流式工作的关键指标 ——
@@ -95,13 +104,15 @@ static void stat_report(const char *tag, sd_stat_t *st, uint32_t sessions,
 
     if (sessions != 0u)
     {
-        dbg_printf("[SD-%s] n=%lu sd=%lu/%lu/%luus gap=%luus %s=%lu bps=%lu tot=%lums\r\n",
+        dbg_printf("[SD-%s] n=%lu sd=%lu/%lu/%luus gap=%lu/%lu/%luus %s=%lu bps=%lu tot=%lums\r\n",
                    tag,
                    (unsigned long)st->cnt,
                    (unsigned long)(st->sum / st->cnt / usp),
                    (unsigned long)(st->min / usp),
                    (unsigned long)(st->max / usp),
                    (unsigned long)(st->gap / st->gap_n / usp),
+                   (unsigned long)(st->gap_min / usp),
+                   (unsigned long)(st->gap_max / usp),
                    poll_tag,
                    (unsigned long)polls,
                    (unsigned long)(st->cnt / sessions),
@@ -109,13 +120,15 @@ static void stat_report(const char *tag, sd_stat_t *st, uint32_t sessions,
     }
     else
     {
-        dbg_printf("[SD-%s] n=%lu sd=%lu/%lu/%luus gap=%luus %s=%lu tot=%lums\r\n",
+        dbg_printf("[SD-%s] n=%lu sd=%lu/%lu/%luus gap=%lu/%lu/%luus %s=%lu tot=%lums\r\n",
                    tag,
                    (unsigned long)st->cnt,
                    (unsigned long)(st->sum / st->cnt / usp),
                    (unsigned long)(st->min / usp),
                    (unsigned long)(st->max / usp),
                    (unsigned long)(st->gap / st->gap_n / usp),
+                   (unsigned long)(st->gap_min / usp),
+                   (unsigned long)(st->gap_max / usp),
                    poll_tag,
                    (unsigned long)polls,
                    (unsigned long)(st->sum / (SystemCoreClock / 1000u)));
@@ -127,6 +140,8 @@ static void stat_report(const char *tag, sd_stat_t *st, uint32_t sessions,
     st->max = 0u;
     st->gap = 0u;
     st->gap_n = 0u;
+    st->gap_min = 0xFFFFFFFFu;
+    st->gap_max = 0u;
 }
 
 void usb_storage_ping(void)
