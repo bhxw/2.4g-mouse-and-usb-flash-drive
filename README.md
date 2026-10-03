@@ -36,6 +36,10 @@ TX 发射端(MPU6050+nRF24L01)  --2.4G-->  RX 本仓库(nRF24L01) --> USB HID �
 ├── USB_DEVICE/           CubeMX USB 工程文件
 ├── MDK-ARM/              Keil 工程（mouse.uvprojx、FreeRTOS 内核；编译产物不入库）
 ├── Reference/            TX 端参考代码（txmain.c）
+├── tools/                本地脚本：keil_build.sh（命令行编译）、parse_log.py（DATA.LOG 解析）、
+│                         doc_lookup.py（大文档精准检索，省 AI 上下文）、make_docs.py
+├── docs/                 INDEX.md（脚本生成的章节索引）、local-review/
+├── AGENTS.md             AI 协作规则（额度红线、文档更新节奏、文档职责边界）
 ├── 项目架构.md            架构/数据流/引脚/已知问题
 ├── 接收端开发方案.md      升级方案 D1~D10、里程碑 M0~M5 与验收
 ├── 开发日志.md            变更与排障流水（长期维护）
@@ -81,6 +85,9 @@ TX 发射端(MPU6050+nRF24L01)  --2.4G-->  RX 本仓库(nRF24L01) --> USB HID �
 ## 说明
 
 - `参考历程/`、个人材料文档、硬件手册等**仅本地保留，不入库**（见 `.gitignore`）
+- **文档检索（省额度）**：四个大文档合计 380KB+，禁止整篇读入 AI 上下文。用
+  `python tools/doc_lookup.py find <关键词> --files` 定位行号 → `section <文件> <行号>` 取该节；
+  改完文档跑 `python tools/doc_lookup.py index` 刷新 `docs/INDEX.md`。规则见 `AGENTS.md`。
 | M2 | SD(SPI1) 驱动 + FatFs 日志链路(DATA.LOG) | ✅ tag m2a/m2b/m2（待硬件实测） |
 | M3 | USB MSC+HID 复合设备 | ⏸ 挂起（分支 feature/usb-composite、test/msc-only；结论见开发日志） |
 | M4 | 系统监控：运行统计/栈水位/链路计数 ✅；IWDG 暂禁(LSI 待实测) | ✅ m4a（待 24h+功耗） |
