@@ -21,6 +21,78 @@ static uint32_t s_cap_blocks = 0;
 static uint16_t s_cap_size = 0;
 static uint8_t  s_cap_ok = 0;
 
+/* ---------------- 传输耗时统计（每 256 块汇总一次） ----------------
+ * 用 DWT->CYCCNT（72MHz，14ns 分辨率）而非 HAL_GetTick()：
+ * 单块耗时在毫秒以下时 1ms 量化会给出 0/1，误差 ±100%，不可用。
+ * 累加到 256 块再打印，一是摊薄量化误差，二是把 dbg_printf 自身的
+ * ~2ms 阻塞开销（console.c:31 走 HAL_UART_Transmit + HAL_MAX_DELAY）
+ * 从每块 1 次降到每 256 块 1 次。
+ */
+#define STAT_FLUSH_BLOCKS   256u
+
+typedef struct
+{
+    uint32_t cnt;
+    uint64_t sum;   /* 累计周期数 */
+    uint32_t min;   /* 周期数 */
+    uint32_t max;   /* 周期数 */
+} sd_stat_t;
+
+static sd_stat_t s_rd_stat = {0, 0, 0xFFFFFFFFu, 0};
+static sd_stat_t s_wr_stat = {0, 0, 0xFFFFFFFFu, 0};
+static uint32_t  s_wr_sessions = 0;   /* 本窗口内 SD_WriteBegin 成功次数 */
+
+static void stat_dwt_init(void)
+{
+    CoreDebug->DEMCR |= CoreDebug_DEMCR_TRCENA_Msk;
+    DWT->CYCCNT = 0u;
+    DWT->CTRL  |= DWT_CTRL_CYCCNTENA_Msk;
+}
+
+static void stat_add(sd_stat_t *st, uint32_t cyc)
+{
+    st->cnt++;
+    st->sum += cyc;
+    if (cyc < st->min) st->min = cyc;
+    if (cyc > st->max) st->max = cyc;
+}
+
+/* sessions != 0 时附带会话统计：blk/sess 是判断 CMD25 是否真的在流式工作的关键指标
+ * —— 接近 256 说明一个会话吃下了整个窗口；等于 1 说明每块都在重开会话，多块白做。 */
+static void stat_report(const char *tag, sd_stat_t *st, uint32_t sessions)
+{
+    uint32_t usp = SystemCoreClock / 1000000u;   /* 每微秒周期数 */
+    if (usp == 0u) usp = 1u;
+
+    if (sessions != 0u)
+    {
+        dbg_printf("[SD-%s] n=%lu avg=%luus min=%luus max=%luus tot=%lums sess=%lu blk/sess=%lu\r\n",
+                   tag,
+                   (unsigned long)st->cnt,
+                   (unsigned long)(st->sum / st->cnt / usp),
+                   (unsigned long)(st->min / usp),
+                   (unsigned long)(st->max / usp),
+                   (unsigned long)(st->sum / (SystemCoreClock / 1000u)),
+                   (unsigned long)sessions,
+                   (unsigned long)(st->cnt / sessions));
+    }
+    else
+    {
+        dbg_printf("[SD-%s] n=%lu avg=%luus min=%luus max=%luus tot=%lums\r\n",
+                   tag,
+                   (unsigned long)st->cnt,
+                   (unsigned long)(st->sum / st->cnt / usp),
+                   (unsigned long)(st->min / usp),
+                   (unsigned long)(st->max / usp),
+                   (unsigned long)(st->sum / (SystemCoreClock / 1000u)));
+    }
+
+    st->cnt = 0u;
+    st->sum = 0u;
+    st->min = 0xFFFFFFFFu;
+    st->max = 0u;
+}
+
 void usb_storage_ping(void)
 {
     s_last_active_ms = HAL_GetTick();
@@ -54,6 +126,7 @@ static const int8_t s_inquiry[] =
 
 void usb_storage_preinit(void)
 {
+    stat_dwt_init();
 #if !SD_BYPASS_TEST
     uint32_t blocks = 0;
     if (storage_sd_ensure() == 0 && SD_GetBlockCount(&blocks) == 0)
@@ -139,10 +212,16 @@ static int8_t sd_storage_read(uint8_t lun, uint8_t *buf, uint32_t blk_addr, uint
     }
     for (uint16_t i = 0; i < blk_len; i++)
     {
+        uint32_t t0 = DWT->CYCCNT;
         if (SD_ReadBlock(blk_addr + i, buf + (uint32_t)i * SD_BLOCK_SIZE) != 0)
         {
             return -1;
         }
+        stat_add(&s_rd_stat, DWT->CYCCNT - t0);
+    }
+    if (s_rd_stat.cnt >= STAT_FLUSH_BLOCKS)
+    {
+        stat_report("RD", &s_rd_stat, 0u);
     }
     return 0;
 #endif
@@ -161,10 +240,32 @@ static int8_t sd_storage_write(uint8_t lun, uint8_t *buf, uint32_t blk_addr, uin
     }
     for (uint16_t i = 0; i < blk_len; i++)
     {
-        if (SD_WriteBlock(blk_addr + i, buf + (uint32_t)i * SD_BLOCK_SIZE) != 0)
+        uint32_t blk = blk_addr + i;
+        const uint8_t *p = buf + (uint32_t)i * SD_BLOCK_SIZE;
+        uint32_t t0 = DWT->CYCCNT;
+
+        /* 会话跨多次 WRITE10 保持打开，只要块号连续就一直流下去。
+         * 不连续（主机换了写入位置）时 SD_WriteChunk 会拒绝，重开会话再试。
+         * 会话不在这里 End：留给下一次 Chunk 继续，或由任何其它 SD 事务的
+         * sd_cs_low() 自动 STOP_TRAN 终结（sd_spi.c）。 */
+        if (SD_WriteChunk(blk, p) != 0)
         {
-            return -1;
+            if (SD_WriteBegin(blk) != 0)
+            {
+                return -1;
+            }
+            s_wr_sessions++;
+            if (SD_WriteChunk(blk, p) != 0)
+            {
+                return -1;
+            }
         }
+        stat_add(&s_wr_stat, DWT->CYCCNT - t0);
+    }
+    if (s_wr_stat.cnt >= STAT_FLUSH_BLOCKS)
+    {
+        stat_report("WR", &s_wr_stat, s_wr_sessions);
+        s_wr_sessions = 0u;
     }
     return 0;
 #endif

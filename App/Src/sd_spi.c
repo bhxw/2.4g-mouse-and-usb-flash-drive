@@ -30,6 +30,7 @@ extern SPI_HandleTypeDef hspi1;
 #define SD_ERR_READ         6
 #define SD_ERR_WRITE        7
 #define SD_ERR_TIMEOUT      8
+#define SD_ERR_CMD25        9   /* 多块写 CMD25 无响应 */
 
 /* 命令 */
 #define SD_CMD0   0x00
@@ -37,6 +38,7 @@ extern SPI_HandleTypeDef hspi1;
 #define SD_CMD9   0x09
 #define SD_CMD17  0x11
 #define SD_CMD24  0x18
+#define SD_CMD25  0x19
 #define SD_CMD55  0x37
 #define SD_CMD58  0x3A
 #define SD_ACMD41 0x29
@@ -44,8 +46,22 @@ extern SPI_HandleTypeDef hspi1;
 #define SD_R1_IDLE   0x01
 #define SD_R1_READY  0x00
 
+/* 数据令牌与应答（参考历程/SD/utility/SdInfo.h） */
+#define SD_TOKEN_WRITE_MULTI  0xFC  /* 多块写，每块数据前 */
+#define SD_TOKEN_STOP_TRAN    0xFD  /* 多块写结束 */
+#define SD_DATA_RES_MASK      0x1F
+#define SD_DATA_RES_ACCEPTED  0x05
+
+#define SD_WRITE_TIMEOUT_MS   600u  /* Sd2Card SD_WRITE_TIMEOUT */
+
 static uint8_t s_hc = 0;    /* 1 = SDHC/SDXC，块地址模式 */
 static uint8_t s_ready = 0; /* 初始化成功标志 */
+
+/* CMD25 多块写会话状态 */
+static uint8_t  s_multi_open  = 0;  /* 1 = CS 已拉低且 CMD25 已被卡接受 */
+static uint32_t s_multi_next  = 0;  /* 会话期望的下一个块号（未做地址左移） */
+
+static void sd_session_close(void);
 
 /* ---------------- 底层原语 ---------------- */
 static void sd_cs_high(void)
@@ -55,6 +71,8 @@ static void sd_cs_high(void)
 
 static void sd_cs_low(void)
 {
+    /* 任何新事务都要先终结遗留的 CMD25 会话，否则卡会一直停在多块写状态 */
+    sd_session_close();
     HAL_GPIO_WritePin(SD_CS_PORT, SD_CS_PIN, GPIO_PIN_RESET);
 }
 
@@ -161,6 +179,23 @@ static uint8_t sd_wait_ready(uint32_t timeout_ms)
         }
     } while ((HAL_GetTick() - t0) < timeout_ms);
     return 1;
+}
+
+/* 结束 CMD25 多块写会话：STOP_TRAN + 忙等待 + 释放 CS
+ * 对应 Sd2Card::writeStop（参考历程/SD/utility/Sd2Card.cpp:633-644）。
+ * 未开启会话时为空操作，可被 sd_cs_low() 无条件调用。 */
+static void sd_session_close(void)
+{
+    if (!s_multi_open)
+    {
+        return;
+    }
+    s_multi_open = 0;
+
+    (void)sd_wait_ready(SD_WRITE_TIMEOUT_MS);
+    (void)sd_xfer(SD_TOKEN_STOP_TRAN);
+    (void)sd_wait_ready(SD_WRITE_TIMEOUT_MS);
+    sd_cs_high();
 }
 
 /* ---------------- 对外接口 ---------------- */
@@ -373,6 +408,74 @@ uint8_t SD_WriteBlock(uint32_t block, const uint8_t *buf)
         return SD_ERR_TIMEOUT;
     }
     sd_cs_high();
+    return SD_ERR_NONE;
+}
+
+/* ---------------- CMD25 流式多块写 ----------------
+ * 会话时序对应 Sd2Card::writeStart / writeData / writeStop
+ * （参考历程/SD/utility/Sd2Card.cpp:602-644 / :545-589）。
+ *
+ * 与 Sd2Card 的一处刻意差异：忙等待放在每块**之后**而非下一块之前。
+ * Sd2Card 把 waitNotBusy 放到 writeData 入口，最后一块的忙等待由 writeStop 兜住；
+ * 本项目 sd_storage_write 返回后 SCSI 层立刻回 CSW(PASSED)
+ * （Middlewares/.../MSC/Src/usbd_msc_scsi.c:97-100），
+ * 所以必须保证每块返回时数据都已被卡接受且不再忙。
+ *
+ * 不发 ACMD23 预擦除：MSC 层不知道一次 WRITE10 之后还有多少块，块数无法预告。
+ */
+uint8_t SD_WriteBegin(uint32_t block)
+{
+    uint8_t r;
+
+    /* sd_cs_low() 内部会先终结遗留会话 */
+    sd_cs_low();
+
+    r = sd_cmd(SD_CMD25, s_hc ? block : (block << 9), 0x01);
+    if (r != SD_R1_READY)
+    {
+        sd_cs_high();
+        return SD_ERR_CMD25;
+    }
+
+    s_multi_open = 1;
+    s_multi_next = block;
+    return SD_ERR_NONE;
+}
+
+uint8_t SD_WriteChunk(uint32_t block, const uint8_t *buf)
+{
+    uint8_t b;
+
+    if (!s_multi_open || block != s_multi_next)
+    {
+        return SD_ERR_WRITE;
+    }
+
+    (void)sd_xfer(SD_TOKEN_WRITE_MULTI);
+    sd_spi_fast_write(buf, SD_BLOCK_SIZE);
+    (void)sd_xfer(0xFF);  /* CRC 高字节(SPI 模式默认关闭 CRC) */
+    (void)sd_xfer(0xFF);  /* CRC 低字节 */
+
+    b = sd_xfer(0xFF);
+    if ((b & SD_DATA_RES_MASK) != SD_DATA_RES_ACCEPTED)
+    {
+        sd_session_close();
+        return SD_ERR_WRITE;
+    }
+
+    if (sd_wait_ready(SD_WRITE_TIMEOUT_MS))
+    {
+        sd_session_close();
+        return SD_ERR_TIMEOUT;
+    }
+
+    s_multi_next = block + 1;
+    return SD_ERR_NONE;
+}
+
+uint8_t SD_WriteEnd(void)
+{
+    sd_session_close();
     return SD_ERR_NONE;
 }
 

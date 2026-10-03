@@ -18,6 +18,18 @@ uint8_t SD_Init(void);
 uint8_t SD_ReadBlock(uint32_t block, uint8_t *buf);
 uint8_t SD_WriteBlock(uint32_t block, const uint8_t *buf);
 
+/**
+ * @brief CMD25 流式多块写：Begin 打开会话 -> 连续 Chunk -> End 关闭
+ *
+ * 会话在整个过程中保持 CS 低电平，因此**期间不得调用任何其它 SD 接口**。
+ * 若被违规调用，其它接口的 sd_cs_low() 会自动发 STOP_TRAN 终结会话（见 sd_spi.c）。
+ * Chunk 只接受严格连续递增的块号，跳号返回非 0，需重新 Begin。
+ * End 可安全重复调用；未 Begin 时为空操作。
+ */
+uint8_t SD_WriteBegin(uint32_t block);
+uint8_t SD_WriteChunk(uint32_t block, const uint8_t *buf);
+uint8_t SD_WriteEnd(void);
+
 /** 查询总扇区数（CSD 解析；SDHC 为块地址模式）。成功返回 0。 */
 uint8_t SD_GetBlockCount(uint32_t *blocks);
 
