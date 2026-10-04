@@ -37,12 +37,15 @@ extern SPI_HandleTypeDef hspi1;
 #define SD_ERR_WRITE        7
 #define SD_ERR_TIMEOUT      8
 #define SD_ERR_CMD25        9   /* 多块写 CMD25 无响应 */
+#define SD_ERR_CMD18       10   /* 多块读 CMD18 无响应 */
 
 /* 命令 */
 #define SD_CMD0   0x00
 #define SD_CMD8   0x08
 #define SD_CMD9   0x09
+#define SD_CMD12  0x0C
 #define SD_CMD17  0x11
+#define SD_CMD18  0x12
 #define SD_CMD24  0x18
 #define SD_CMD25  0x19
 #define SD_CMD55  0x37
@@ -59,6 +62,7 @@ extern SPI_HandleTypeDef hspi1;
 #define SD_DATA_RES_ACCEPTED  0x05
 
 #define SD_WRITE_TIMEOUT_MS   600u  /* Sd2Card SD_WRITE_TIMEOUT */
+#define SD_READ_TIMEOUT_MS    200u  /* 等 0xFE 起始令牌 / CMD12 后忙结束 */
 
 static uint8_t s_hc = 0;    /* 1 = SDHC/SDXC，块地址模式 */
 static uint8_t s_ready = 0; /* 初始化成功标志 */
@@ -66,6 +70,11 @@ static uint8_t s_ready = 0; /* 初始化成功标志 */
 /* CMD25 多块写会话状态 */
 static uint8_t  s_multi_open  = 0;  /* 1 = CS 已拉低且 CMD25 已被卡接受 */
 static uint32_t s_multi_next  = 0;  /* 会话期望的下一个块号（未做地址左移） */
+
+/* CMD18 多块读会话状态。与写会话天然互斥：任一种 Begin 都走 sd_cs_low()，
+ * 而它会先终结遗留会话。 */
+static uint8_t  s_rd_open  = 0;     /* 1 = CS 已拉低且 CMD18 已被卡接受 */
+static uint32_t s_rd_next  = 0;     /* 会话期望的下一个块号（未做地址左移） */
 
 /* 轮询圈数计数器（纯测量，不影响功能）。每圈 = SPI 上一个字节时间 = 444ns@18MHz */
 static uint32_t s_poll_wait_ready = 0;  /* sd_wait_ready 圈数：卡写忙时间 */
@@ -262,11 +271,21 @@ static uint8_t sd_wait_ready(uint32_t timeout_ms)
     return 1;
 }
 
-/* 结束 CMD25 多块写会话：STOP_TRAN + 忙等待 + 释放 CS
- * 对应 Sd2Card::writeStop（参考历程/SD/utility/Sd2Card.cpp:633-644）。
+/* 结束多块会话：读会话发 CMD12，写会话发 STOP_TRAN，之后都等忙结束再释放 CS。
+ * 写侧对应 Sd2Card::writeStop（参考历程/SD/utility/Sd2Card.cpp:633-644），
+ * 读侧对应 FatFs disk_read 多扇区分支收尾的 send_cmd(CMD12)。
  * 未开启会话时为空操作，可被 sd_cs_low() 无条件调用。 */
 static void sd_session_close(void)
 {
+    if (s_rd_open)
+    {
+        s_rd_open = 0;
+        /* CMD12 的应答是 R1b：sd_cmd 拿到 R1 后卡可能仍拉着 DO 表示忙 */
+        (void)sd_cmd(SD_CMD12, 0, 0x01);
+        (void)sd_wait_ready(SD_READ_TIMEOUT_MS);
+        sd_cs_high();
+        return;
+    }
     if (!s_multi_open)
     {
         return;
@@ -472,6 +491,82 @@ uint8_t SD_ReadBlock(uint32_t block, uint8_t *buf)
     (void)sd_xfer(0xFF);  /* CRC 高字节 */
     (void)sd_xfer(0xFF);  /* CRC 低字节 */
     sd_cs_high();
+    return SD_ERR_NONE;
+}
+
+/* ---------------- CMD18 流式多块读 ----------------
+ * 时序对应 FatFs disk_read 的多扇区分支：CMD18 -> N×(0xFE + 512B + 2B CRC) -> CMD12。
+ * 全程 CS 保持低电平，卡只在主机给时钟时才吐下一块，所以会话可以跨多次调用
+ * 一直挂着；块号断开、任何其它 SD 事务、显式 ReadEnd 都会终结它。
+ *
+ * 相比逐块 CMD17 省掉的是每块一次命令帧（前导 + 6 字节 + 最多 16 字节等 R1）
+ * 和一次 CS 抬/拉；数据段本身（令牌 + 512B + CRC）一个字节都不少。
+ */
+uint8_t SD_ReadBegin(uint32_t block)
+{
+    uint8_t r;
+
+    /* sd_cs_low() 内部会先终结遗留会话（含 CMD25 写会话） */
+    sd_cs_low();
+
+    r = sd_cmd(SD_CMD18, s_hc ? block : (block << 9), 0x01);
+    if (r != SD_R1_READY)
+    {
+        sd_cs_high();
+        return SD_ERR_CMD18;
+    }
+
+    s_rd_open = 1;
+    s_rd_next = block;
+    return SD_ERR_NONE;
+}
+
+uint8_t SD_ReadChunk(uint32_t block, uint8_t *buf)
+{
+    uint32_t t0;
+    uint8_t b;
+
+    if (!s_rd_open || block != s_rd_next)
+    {
+        return SD_ERR_READ;
+    }
+
+    /* 等起始令牌，判据与 SD_ReadBlock 完全一致（只等 0xFE，超时 200ms）。
+     * 上一版在这里改成 `(b & 0x80) == 0` 提前退出，导致挂载阶段全量读失败，
+     * 详见开发日志 2026-10-04 第六条；本次复现把 CMD18 作为唯一变量。
+     * 圈数照常计入 s_poll_token（卡读延迟）。 */
+    t0 = HAL_GetTick();
+    do
+    {
+        s_poll_token++;
+        b = sd_xfer(0xFF);
+        if (b == 0xFE)
+        {
+            break;
+        }
+    } while ((HAL_GetTick() - t0) < SD_READ_TIMEOUT_MS);
+    if (b != 0xFE)
+    {
+        sd_session_close();
+        return SD_ERR_TIMEOUT;
+    }
+
+    /* 512 字节数据段走 DMA：发常量 0xFF 当时钟（TX MINC 关），收进 buf（RX MINC 开） */
+    if (sd_dma_xfer(&s_dma_dummy, buf, 0u, 1u, (uint16_t)SD_BLOCK_SIZE) != SD_ERR_NONE)
+    {
+        sd_session_close();
+        return SD_ERR_TIMEOUT;
+    }
+    (void)sd_xfer(0xFF);  /* CRC 高字节(SPI 模式默认关闭 CRC) */
+    (void)sd_xfer(0xFF);  /* CRC 低字节 */
+
+    s_rd_next = block + 1;
+    return SD_ERR_NONE;
+}
+
+uint8_t SD_ReadEnd(void)
+{
+    sd_session_close();
     return SD_ERR_NONE;
 }
 

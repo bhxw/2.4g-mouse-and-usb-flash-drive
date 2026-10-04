@@ -28,7 +28,7 @@ static uint8_t  s_cap_ok = 0;
  * ~2ms 阻塞开销（console.c:31 走 HAL_UART_Transmit + HAL_MAX_DELAY）
  * 从每块 1 次降到每 256 块 1 次。
  *
- * 每块时间拆成两段测：sd（SD_ReadBlock / SD_WriteChunk 内部）+ gap（两次调用之间）。
+ * 每块时间拆成两段测：sd（SD_ReadChunk / SD_WriteChunk 内部）+ gap（两次调用之间）。
  * 校验式 sd_avg + gap_avg ≈ 墙钟/块数，闭合了预算才算成立。
  * SD 段再靠 sd_spi.c 的轮询圈数计数器细分为 线上字节 / 卡忙 / CPU 轮询开销。
  */
@@ -49,6 +49,7 @@ typedef struct
 static sd_stat_t s_rd_stat = {0, 0, 0xFFFFFFFFu, 0, 0, 0, 0xFFFFFFFFu, 0};
 static sd_stat_t s_wr_stat = {0, 0, 0xFFFFFFFFu, 0, 0, 0, 0xFFFFFFFFu, 0};
 static uint32_t  s_wr_sessions = 0;   /* 本窗口内 SD_WriteBegin 成功次数 */
+static uint32_t  s_rd_sessions = 0;   /* 本窗口内 SD_ReadBegin 成功次数 */
 
 /* 块间间隔探针：这段窗口里 EP2 已经重新挂好 PrepareReceive（usbd_msc_scsi.c:105），
  * 设备随时可收，NAK 期算在 sd 那一段里面而不是 gap 里。所以 gap 是纯
@@ -93,7 +94,7 @@ static void stat_add_gap(sd_stat_t *st, uint32_t cyc)
  * 一次调用只带一块，故 gap_n == 块数）；poll_tag/polls=本窗口内的轮询圈数总数
  * （打总数不打平均，免得整数除法把 <1 的值吃掉）；bps=blk/sess。
  *
- * sessions != 0 时才打印 bps：它是判断 CMD25 有没有真在流式工作的关键指标 ——
+ * sessions != 0 时才打印 bps：它是判断 CMD18/CMD25 有没有真在流式工作的关键指标 ——
  * 接近 256 说明一个会话吃下了整个窗口；等于 1 说明每块都在重开会话，多块白做。
  * 整个字段消失则说明会话跨窗口一直开着（比 256 更好）。 */
 static void stat_report(const char *tag, sd_stat_t *st, uint32_t sessions,
@@ -278,10 +279,25 @@ static int8_t sd_storage_read(uint8_t lun, uint8_t *buf, uint32_t blk_addr, uint
 
     for (uint16_t i = 0; i < blk_len; i++)
     {
+        uint32_t blk = blk_addr + i;
+        uint8_t *p = buf + (uint32_t)i * SD_BLOCK_SIZE;
         uint32_t t0 = DWT->CYCCNT;
-        if (SD_ReadBlock(blk_addr + i, buf + (uint32_t)i * SD_BLOCK_SIZE) != 0)
+
+        /* 会话跨多次 READ10 保持打开，只要块号连续就一直流下去（与写侧同构）。
+         * 不连续（主机转去读 FAT/目录项）时 SD_ReadChunk 会拒绝，重开会话再试。
+         * 会话不在这里 End：留给下一次 Chunk 继续，或由任何其它 SD 事务的
+         * sd_cs_low() 自动发 CMD12 终结（sd_spi.c）。 */
+        if (SD_ReadChunk(blk, p) != 0)
         {
-            return -1;
+            if (SD_ReadBegin(blk) != 0)
+            {
+                return -1;
+            }
+            s_rd_sessions++;
+            if (SD_ReadChunk(blk, p) != 0)
+            {
+                return -1;
+            }
         }
         stat_add(&s_rd_stat, DWT->CYCCNT - t0);
     }
@@ -289,7 +305,8 @@ static int8_t sd_storage_read(uint8_t lun, uint8_t *buf, uint32_t blk_addr, uint
     s_rd_last_exit = DWT->CYCCNT;
     if (s_rd_stat.cnt >= STAT_FLUSH_BLOCKS)
     {
-        stat_report("RD", &s_rd_stat, 0u, "tokpoll", SD_TakeTokenPolls());
+        stat_report("RD", &s_rd_stat, s_rd_sessions, "tokpoll", SD_TakeTokenPolls());
+        s_rd_sessions = 0u;
         s_rd_last_exit = DWT->CYCCNT;   /* 打印自身 ~6.5ms 不算进下一次 gap */
     }
     return 0;

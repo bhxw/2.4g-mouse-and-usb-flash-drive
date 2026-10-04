@@ -19,6 +19,18 @@ uint8_t SD_ReadBlock(uint32_t block, uint8_t *buf);
 uint8_t SD_WriteBlock(uint32_t block, const uint8_t *buf);
 
 /**
+ * @brief CMD18 流式多块读：Begin 打开会话 -> 连续 Chunk -> End(CMD12) 关闭
+ *
+ * 约束与下面的 CMD25 写会话相同：会话期间 CS 保持低电平，**不得调用任何其它
+ * SD 接口**；违规调用时其它接口的 sd_cs_low() 会自动发 CMD12 终结会话。
+ * Chunk 只接受严格连续递增的块号，跳号返回非 0，需重新 Begin。
+ * 卡只在收到时钟时才吐下一块，所以会话可以跨多次调用长期挂着而不丢数据。
+ */
+uint8_t SD_ReadBegin(uint32_t block);
+uint8_t SD_ReadChunk(uint32_t block, uint8_t *buf);
+uint8_t SD_ReadEnd(void);
+
+/**
  * @brief CMD25 流式多块写：Begin 打开会话 -> 连续 Chunk -> End 关闭
  *
  * 会话在整个过程中保持 CS 低电平，因此**期间不得调用任何其它 SD 接口**。
