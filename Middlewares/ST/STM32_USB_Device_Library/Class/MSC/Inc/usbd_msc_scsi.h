@@ -167,8 +167,23 @@ int8_t SCSI_ProcessCmd(USBD_HandleTypeDef *pdev, uint8_t lun, uint8_t *cmd);
 void SCSI_SenseCode(USBD_HandleTypeDef *pdev, uint8_t lun, uint8_t sKey,
                     uint8_t ASC);
 
-/* Deferred SCSI: signal queue for SD operations in task context */
+/* Deferred SCSI: SD operations run in task context.  The USB ISR hands work
+   over through a queue whose items name both the operation and the buffer the
+   completion interrupt just released, so no shared single-slot flag is needed. */
+#define SCSI_MSC_OP_READ   1U
+#define SCSI_MSC_OP_WRITE  2U
+
+typedef struct
+{
+  uint8_t op;   /* SCSI_MSC_OP_READ / SCSI_MSC_OP_WRITE */
+  uint8_t buf;  /* buffer index released by the ISR; only meaningful for WRITE */
+} scsi_msc_sig_t;
+
+/* Must run before MX_USB_DEVICE_Init(): the ISR dereferences the buffer
+   pointers as soon as the first CBW arrives. */
+int  scsi_msc_buffers_init(void);
 void scsi_msc_set_signal_queue(void *q);
+void scsi_msc_reset_pipeline(void);
 
 /**
   * @}

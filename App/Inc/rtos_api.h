@@ -40,4 +40,7 @@ int rtos_queue_send_from_isr(rtos_queue_handle_t q, const void *item);
 /** 出队（复制 item_bytes 字节）。成功 0，超时/失败 -1。 */
 int rtos_queue_recv(rtos_queue_handle_t q, void *item, uint32_t timeout_ms);
 
+/** ISR 安全出队（仅用于中断上下文，不阻塞）。成功 0，空/失败 -1。 */
+int rtos_queue_recv_from_isr(rtos_queue_handle_t q, void *item);
+
 #endif /* __RTOS_API_H */

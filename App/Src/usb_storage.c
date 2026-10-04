@@ -199,7 +199,15 @@ void usb_storage_preinit(void)
 void usb_storage_msc_task_init(void)
 {
     rtos_queue_handle_t q = NULL;
-    if (rtos_queue_create(2, 1, &q) == 0)
+
+    /* Runs before MX_USB_DEVICE_Init(), so the pipeline buffers exist before
+       the first CBW can make the USB ISR dereference them. */
+    if (scsi_msc_buffers_init() != 0)
+    {
+        dbg_printf("[MSC] pipeline buffer alloc failed\r\n");
+    }
+
+    if (rtos_queue_create(2, sizeof(scsi_msc_sig_t), &q) == 0)
     {
         scsi_msc_set_signal_queue(q);
     }

@@ -30,26 +30,85 @@ EndBSPDependencies */
 #include "usbd_msc_data.h"
 #include "usbd_core.h"
 #include "rtos_api.h"
+#include "FreeRTOS.h"
+#include "portable.h"
 
-#include <string.h>
+/* ---- Deferred SCSI processing: SD ops run in the task, not the USB ISR ----
+ *
+ * Buffer ownership is what keeps the pipeline from dropping packets:
+ *
+ *   - s_buf[] is shared by both directions; a command is either READ or WRITE,
+ *     never both at once, so one pair of buffers serves the whole pipeline.
+ *   - WRITE: the ISR owns s_buf[s_buf_idx] from the moment EP OUT is armed
+ *     until the OUT completion fires, then hands it over by queueing that
+ *     index.  READ: s_buf_idx only ever names block 0's buffer; after that the
+ *     task tracks its own ping-pong in s_rd_pend_buf and the queued index is
+ *     ignored.
+ *   - Every completion queues exactly one item, unconditionally.  The queue is
+ *     the only record of outstanding work, so there is no "is a slot free"
+ *     test anywhere to fail and silently swallow a packet.
+ *   - The task owns s_buf[sig.buf] from dequeue until the SD op returns, and
+ *     releases the other buffer to the wire before blocking, so the USB
+ *     transfer and the SD access overlap.
+ *   - Queue occupancy can never exceed 1: the ISR queues once per armed
+ *     packet, the task re-arms once per dequeued item.  Depth 2 is margin.
+ */
+static uint8_t            *s_buf[2];
+static volatile uint8_t    s_buf_idx       = 0;
+static rtos_queue_handle_t s_scsi_sig_q    = NULL;
 
-/* ---- Deferred SCSI processing (SD ops in task, not USB ISR) ---- */
-#define DEFER_NONE  0U
-#define DEFER_READ  1U
-#define DEFER_WRITE 2U
+/* Read-ahead bookkeeping, touched only by the task. */
+static uint8_t             s_rd_pend_valid = 0;  /* s_buf[s_rd_pend_buf] holds a pre-read block */
+static uint8_t             s_rd_pend_buf   = 0;
+static uint8_t             s_rd_failed     = 0;  /* read-ahead failed; report at next signal */
 
-static volatile uint8_t  s_deferred_op   = DEFER_NONE;
-static uint8_t           s_write_shadow[MSC_MEDIA_PACKET];
-static rtos_queue_handle_t s_scsi_sig_q  = NULL;
+int scsi_msc_buffers_init(void)
+{
+    s_buf[0] = (uint8_t *)pvPortMalloc(MSC_MEDIA_PACKET);
+    s_buf[1] = (uint8_t *)pvPortMalloc(MSC_MEDIA_PACKET);
+    return (s_buf[0] != NULL && s_buf[1] != NULL) ? 0 : -1;
+}
 
 void scsi_msc_set_signal_queue(void *q)
 {
     s_scsi_sig_q = (rtos_queue_handle_t)q;
 }
 
+/* Called from the USB ISR on a Bulk-Only Mass Storage Reset.  Items queued by
+   the transfer the host just abandoned must not survive into the next command:
+   drained here rather than in the task, because with nothing pending the task
+   stays blocked and cannot act on the stale scsi_blk_addr/scsi_blk_len that
+   MSC_BOT_Reset leaves behind.  The buffer index and the read-ahead state are
+   re-established by the next SCSI_Read10/SCSI_Write10 instead. */
+void scsi_msc_reset_pipeline(void)
+{
+    scsi_msc_sig_t stale;
+
+    if (s_scsi_sig_q != NULL)
+    {
+        while (rtos_queue_recv_from_isr(s_scsi_sig_q, &stale) == 0)
+        {
+        }
+    }
+}
+
+/* One completion interrupt == one queue item.  The queue cannot overflow: the
+   ISR only ever signals for a buffer the task armed, and the task arms exactly
+   one per item it dequeues. */
+static void scsi_msc_signal_from_isr(uint8_t op)
+{
+    if (s_scsi_sig_q != NULL)
+    {
+        scsi_msc_sig_t sig;
+        sig.op  = op;
+        sig.buf = s_buf_idx;
+        (void)rtos_queue_send_from_isr(s_scsi_sig_q, &sig);
+    }
+}
+
 void scsi_msc_task_entry(void *param)
 {
-    uint8_t sig;
+    scsi_msc_sig_t sig;
     (void)param;
 
     for (;;)
@@ -58,57 +117,110 @@ void scsi_msc_task_entry(void *param)
             continue;
 
         USBD_MSC_BOT_HandleTypeDef *hmsc = usbd_msc_get_hmsc();
-        USBD_HandleTypeDef *pdev     = usbd_msc_get_pdev();
-        uint32_t len = hmsc->scsi_blk_len * hmsc->scsi_blk_size;
-        len = MIN(len, MSC_MEDIA_PACKET);
+        USBD_HandleTypeDef         *pdev = usbd_msc_get_pdev();
+        uint32_t len       = MIN(hmsc->scsi_blk_len * hmsc->scsi_blk_size,
+                                 MSC_MEDIA_PACKET);
         uint16_t blk_count = (uint16_t)(len / hmsc->scsi_blk_size);
 
-        if (s_deferred_op == DEFER_READ)
+        if (sig.op == SCSI_MSC_OP_WRITE)
         {
-            if ((usbd_msc_get_fops())->Read(0, hmsc->bot_data,
-                                            hmsc->scsi_blk_addr, blk_count) < 0)
+            uint8_t cur = sig.buf;                   /* buffer the ISR just filled */
+            uint8_t nxt = (uint8_t)(cur ^ 1U);
+
+            /* Arm the next OUT before the blocking SD write -- but only when
+               there is one.  On the last block MSC_BOT_SendCSW() below must be
+               what re-arms EP OUT, and it re-arms it for the next CBW. */
+            if (blk_count < hmsc->scsi_blk_len)
             {
-                SCSI_SenseCode(pdev, 0, HARDWARE_ERROR, UNRECOVERED_READ_ERROR);
-                MSC_BOT_SendCSW(pdev, USBD_CSW_CMD_FAILED);
+                s_buf_idx = nxt;
+                USBD_LL_PrepareReceive(pdev, MSC_EPOUT_ADDR, s_buf[nxt], len);
             }
-            else
-            {
-                USBD_LL_Transmit(pdev, MSC_EPIN_ADDR, hmsc->bot_data, len);
-                hmsc->scsi_blk_addr += blk_count;
-                hmsc->scsi_blk_len  -= blk_count;
-                hmsc->csw.dDataResidue -= len;
-                if (hmsc->scsi_blk_len == 0U)
-                    hmsc->bot_state = USBD_BOT_LAST_DATA_IN;
-            }
-        }
-        else if (s_deferred_op == DEFER_WRITE)
-        {
-            if ((usbd_msc_get_fops())->Write(0, s_write_shadow,
+
+            if ((usbd_msc_get_fops())->Write(0, s_buf[cur],
                                              hmsc->scsi_blk_addr, blk_count) < 0)
             {
                 SCSI_SenseCode(pdev, 0, HARDWARE_ERROR, WRITE_FAULT);
                 MSC_BOT_SendCSW(pdev, USBD_CSW_CMD_FAILED);
+                continue;
+            }
+
+            hmsc->scsi_blk_addr    += blk_count;
+            hmsc->scsi_blk_len     -= blk_count;
+            hmsc->csw.dDataResidue -= len;
+
+            if (hmsc->scsi_blk_len == 0U)
+            {
+                MSC_BOT_SendCSW(pdev, USBD_CSW_CMD_PASSED);
+            }
+        }
+        else if (sig.op == SCSI_MSC_OP_READ)
+        {
+            uint8_t cur;
+
+            if (s_rd_failed)
+            {
+                /* The read-ahead failed while the previous block was still on
+                   the wire.  That IN has now completed, so nothing is in
+                   flight and the CSW can safely go out. */
+                s_rd_failed = 0;
+                SCSI_SenseCode(pdev, 0, HARDWARE_ERROR, UNRECOVERED_READ_ERROR);
+                MSC_BOT_SendCSW(pdev, USBD_CSW_CMD_FAILED);
+                continue;
+            }
+
+            if (s_rd_pend_valid)
+            {
+                cur = s_rd_pend_buf;                 /* read during the last IN */
+                s_rd_pend_valid = 0;
             }
             else
             {
-                hmsc->scsi_blk_addr += blk_count;
-                hmsc->scsi_blk_len  -= blk_count;
-                hmsc->csw.dDataResidue -= len;
-                if (hmsc->scsi_blk_len == 0U)
+                cur = sig.buf;                       /* first block of the command */
+                if ((usbd_msc_get_fops())->Read(0, s_buf[cur],
+                                                hmsc->scsi_blk_addr,
+                                                blk_count) < 0)
                 {
-                    MSC_BOT_SendCSW(pdev, USBD_CSW_CMD_PASSED);
+                    SCSI_SenseCode(pdev, 0, HARDWARE_ERROR, UNRECOVERED_READ_ERROR);
+                    MSC_BOT_SendCSW(pdev, USBD_CSW_CMD_FAILED);
+                    continue;
+                }
+            }
+
+            USBD_LL_Transmit(pdev, MSC_EPIN_ADDR, s_buf[cur], len);
+            hmsc->scsi_blk_addr    += blk_count;
+            hmsc->scsi_blk_len     -= blk_count;
+            hmsc->csw.dDataResidue -= len;
+
+            if (hmsc->scsi_blk_len == 0U)
+            {
+                hmsc->bot_state = USBD_BOT_LAST_DATA_IN;
+            }
+            else
+            {
+                /* Pull block N+1 off the SD card now, while block N's IN is
+                   still on the wire -- this overlap is the whole point of the
+                   second buffer.  s_buf[nxt] was transmitted two iterations
+                   ago and its IN completed one iteration ago (that completion
+                   is the signal that woke us), so it is free.
+                   scsi_blk_addr has already been advanced past block N. */
+                uint8_t  nxt  = (uint8_t)(cur ^ 1U);
+                uint32_t nlen = MIN(hmsc->scsi_blk_len * hmsc->scsi_blk_size,
+                                    MSC_MEDIA_PACKET);
+                uint16_t nblk = (uint16_t)(nlen / hmsc->scsi_blk_size);
+
+                if ((usbd_msc_get_fops())->Read(0, s_buf[nxt],
+                                                hmsc->scsi_blk_addr,
+                                                nblk) < 0)
+                {
+                    s_rd_failed = 1;
                 }
                 else
                 {
-                    len = MIN((hmsc->scsi_blk_len * hmsc->scsi_blk_size),
-                              MSC_MEDIA_PACKET);
-                    USBD_LL_PrepareReceive(pdev, MSC_EPOUT_ADDR,
-                                           hmsc->bot_data, len);
+                    s_rd_pend_buf   = nxt;
+                    s_rd_pend_valid = 1;
                 }
             }
         }
-
-        s_deferred_op = DEFER_NONE;
     }
 }
 
@@ -571,6 +683,13 @@ static int8_t SCSI_Read10(USBD_HandleTypeDef *pdev, uint8_t lun, uint8_t *params
     }
 
     hmsc->bot_data_length = MSC_MEDIA_PACKET;
+
+    /* New command: drop any read-ahead state carried over from a previous one,
+       and point the ISR at the buffer that will hold block 0. */
+    s_buf_idx       = 0;
+    s_rd_pend_valid = 0;
+    s_rd_failed     = 0;
+
     return SCSI_ProcessRead(pdev, lun);
   }
   else /* Read Process ongoing */
@@ -641,9 +760,10 @@ static int8_t SCSI_Write10(USBD_HandleTypeDef  *pdev, uint8_t lun, uint8_t *para
 
     len = MIN(len, MSC_MEDIA_PACKET);
 
-    /* Prepare EP to receive first data packet */
+    /* Host data lands straight into s_buf[0] -- the task never copies it. */
     hmsc->bot_state = USBD_BOT_DATA_OUT;
-    USBD_LL_PrepareReceive(pdev, MSC_EPOUT_ADDR, hmsc->bot_data, len);
+    s_buf_idx = 0;
+    USBD_LL_PrepareReceive(pdev, MSC_EPOUT_ADDR, s_buf[0], len);
   }
   else /* Write Process ongoing */
   {
@@ -712,12 +832,10 @@ static int8_t SCSI_ProcessRead(USBD_HandleTypeDef  *pdev, uint8_t lun)
   (void)pdev;
   (void)lun;
 
-  s_deferred_op = DEFER_READ;
-  if (s_scsi_sig_q != NULL)
-  {
-    uint8_t sig = 1;
-    rtos_queue_send_from_isr(s_scsi_sig_q, &sig);
-  }
+  /* Reached once per completed IN transfer, i.e. once per block, so exactly
+     one signal goes out per block.  The task owns the read-ahead bookkeeping;
+     nothing here may gate on shared state or a packet gets orphaned. */
+  scsi_msc_signal_from_isr(SCSI_MSC_OP_READ);
   return 0;
 }
 
@@ -730,20 +848,12 @@ static int8_t SCSI_ProcessRead(USBD_HandleTypeDef  *pdev, uint8_t lun)
 
 static int8_t SCSI_ProcessWrite(USBD_HandleTypeDef  *pdev, uint8_t lun)
 {
-  USBD_MSC_BOT_HandleTypeDef *hmsc = usbd_msc_get_hmsc();
-  uint32_t len = hmsc->scsi_blk_len * hmsc->scsi_blk_size;
-  len = MIN(len, MSC_MEDIA_PACKET);
-
   (void)pdev;
   (void)lun;
 
-  memcpy(s_write_shadow, hmsc->bot_data, len);
-  s_deferred_op = DEFER_WRITE;
-  if (s_scsi_sig_q != NULL)
-  {
-    uint8_t sig = 1;
-    rtos_queue_send_from_isr(s_scsi_sig_q, &sig);
-  }
+  /* The host's data already landed in s_buf[s_buf_idx] via PrepareReceive --
+     nothing to copy, just hand the buffer over to the task. */
+  scsi_msc_signal_from_isr(SCSI_MSC_OP_WRITE);
   return 0;
 }
 /**

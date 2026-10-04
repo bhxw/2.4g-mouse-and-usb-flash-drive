@@ -131,6 +131,10 @@ void MSC_BOT_Reset(USBD_HandleTypeDef  *pdev)
   hmsc->bot_state  = USBD_BOT_IDLE;
   hmsc->bot_status = USBD_BOT_STATUS_RECOVERY;
 
+  /* Drop any pipeline item left over from the transfer the host just gave up
+     on; a stale one would make the task act on the next CBW's state. */
+  scsi_msc_reset_pipeline();
+
   /* Prapare EP to Receive First BOT Cmd */
   USBD_LL_PrepareReceive(pdev, MSC_EPOUT_ADDR, (uint8_t *)(void *)&hmsc->cbw,
                          USBD_BOT_CBW_LENGTH);
