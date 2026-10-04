@@ -38,15 +38,10 @@ TX 发射端(MPU6050+nRF24L01)  --2.4G-->  RX 本仓库(nRF24L01) --> USB HID �
 ├── Middlewares/          ST USB 设备库（HID 类）
 ├── USB_DEVICE/           CubeMX USB 工程文件
 ├── MDK-ARM/              Keil 工程（mouse.uvprojx、FreeRTOS 内核；编译产物不入库）
-├── Reference/            TX 端参考代码（txmain.c）
-├── tools/                本地脚本：keil_build.sh（命令行编译）、parse_log.py（DATA.LOG 解析）、
-│                         doc_lookup.py（大文档精准检索，省 AI 上下文）、make_docs.py
-├── docs/                 INDEX.md（脚本生成的章节索引）
-├── AGENTS.md             AI 协作规则（额度红线、文档更新节奏、文档职责边界）
 ├── 项目架构.md            架构/数据流/引脚/已知问题
-├── 接收端开发方案.md      升级方案 D1~D10、里程碑 M0~M5 与验收
-├── 开发日志.md            变更与排障流水（长期维护）
-└── mouse.ioc             CubeMX 工程
+├── mouse.ioc             CubeMX 工程
+└── local/                本地目录（已忽略，不入库）：TX 端参考代码、开发脚本、
+                          开发日志/方案/问答等长期文档、数据手册与抓包材料
 ```
 
 ## 硬件与引脚
