@@ -12,6 +12,7 @@
 #include "usbd_ctlreq.h"
 #include "usbd_hid.h"
 #include "usbd_msc.h"
+#include "usbd_pma_db.h"    /* 双缓冲接线自证 PMA_DB_Report() */
 
 #define COMP_DEBUG  0
 
@@ -39,7 +40,7 @@ __ALIGN_BEGIN static uint8_t s_cfg_fs[COMP_CFG_SIZ] __ALIGN_END =
     0x22, 0x4A, 0x00,           /* ReportDesc: 74B */
 
     0x07, USB_DESC_TYPE_ENDPOINT,
-    0x81, 0x03, 0x04, 0x00, 0x0A,   /* EP1 IN 中断 4B 10ms */
+    0x81, 0x03, 0x04, 0x00, 0x01,   /* EP1 IN 中断 4B 1ms */
 
     /* ---- 接口1: MSC ---- */
     0x09, USB_DESC_TYPE_INTERFACE,
@@ -50,7 +51,7 @@ __ALIGN_BEGIN static uint8_t s_cfg_fs[COMP_CFG_SIZ] __ALIGN_END =
     0x02, 0x02, 0x40, 0x00, 0x00,   /* EP2 OUT Bulk 64B */
 
     0x07, USB_DESC_TYPE_ENDPOINT,
-    0x82, 0x02, 0x40, 0x00, 0x00,   /* EP2 IN Bulk 64B */
+    0x83, 0x02, 0x40, 0x00, 0x00,   /* EP3 IN Bulk 64B（自研双缓冲要求同一端点号只服务一个方向，见 usbd_msc.h） */
 };
 
 static void *s_hid_h = NULL;
@@ -84,6 +85,11 @@ static uint8_t comp_init(USBD_HandleTypeDef *pdev, uint8_t cfgidx)
         set_child(pdev, s_hid_h);
         return USBD_OK;
     }
+
+    /* 自研双缓冲接线自证：这里已经是 MSC 端点 OpenEP 之后（KIND/两块地址/STAT 都落地了），
+     * 内部有一次性门锁 —— 本函数跑在 USB ISR 里，dbg_printf 是忙等 UART（~6ms/行），
+     * 失败模式下主机会反复重发 SET_CONFIGURATION，绝不能每来一次打一行。 */
+    PMA_DB_Report();
 
     set_child(pdev, s_hid_h);
     return USBD_OK;

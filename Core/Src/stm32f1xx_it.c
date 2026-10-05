@@ -22,6 +22,7 @@
 #include "stm32f1xx_it.h"
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
+#include "usbd_pma_db.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -219,6 +220,21 @@ void DMA1_Channel3_IRQHandler(void)
 }
 
 /**
+  * @brief USB 中断体（LP / HP 两条线共用）。
+  *
+  * 先让自研 DB 层吃掉 EP2 OUT / EP3 IN 的 CTR 并清掉对应的 CTR 位；剩下不是它管的
+  * 端点（EP0、EP1 HID）再交给 HAL_PCD_IRQHandler —— 后者内部是
+  * `while (ISTR & CTR)` 取 DAINT 里最高优先端点，所以必须先由本层清位，
+  * 否则会被它先吃掉、本层的双缓冲状态机就断了。
+  * 两条线在 usbd_conf.c 里设成同一优先级（5,0）⇒ 互不抢占，共用一份状态没有竞态。
+  */
+static void usb_fs_irq_body(void)
+{
+  PMA_DB_IRQHandler();
+  HAL_PCD_IRQHandler(&hpcd_USB_FS);
+}
+
+/**
   * @brief This function handles USB low priority or CAN RX0 interrupts.
   */
 void USB_LP_CAN1_RX0_IRQHandler(void)
@@ -226,10 +242,27 @@ void USB_LP_CAN1_RX0_IRQHandler(void)
   /* USER CODE BEGIN USB_LP_CAN1_RX0_IRQn 0 */
 
   /* USER CODE END USB_LP_CAN1_RX0_IRQn 0 */
-  HAL_PCD_IRQHandler(&hpcd_USB_FS);
+  usb_fs_irq_body();
   /* USER CODE BEGIN USB_LP_CAN1_RX0_IRQn 1 */
 
   /* USER CODE END USB_LP_CAN1_RX0_IRQn 1 */
+}
+
+/**
+  * @brief This function handles USB high priority or CAN TX interrupts.
+  *
+  * F1 上双缓冲 bulk IN 端点的 CTR_TX 走这条线（见 usbd_conf.c 里的 NVIC 说明），
+  * 体与 LP 完全一致：本层先处理自己的端点，别的交回 HAL。
+  */
+void USB_HP_CAN1_TX_IRQHandler(void)
+{
+  /* USER CODE BEGIN USB_HP_CAN1_TX_IRQn 0 */
+
+  /* USER CODE END USB_HP_CAN1_TX_IRQn 0 */
+  usb_fs_irq_body();
+  /* USER CODE BEGIN USB_HP_CAN1_TX_IRQn 1 */
+
+  /* USER CODE END USB_HP_CAN1_TX_IRQn 1 */
 }
 
 /**

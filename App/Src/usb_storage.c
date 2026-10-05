@@ -10,6 +10,7 @@
 #include "main.h"       /* HAL_GetTick */
 #include "rtos_api.h"
 #include "usbd_msc_scsi.h"
+#include "usbd_pma_db.h"    /* 双缓冲层诊断计数，跟 [SD-RD]/[SD-WR] 行一起打 */
 
 #include <string.h>
 
@@ -28,8 +29,11 @@ static uint8_t  s_cap_ok = 0;
  * ~2ms 阻塞开销（console.c:31 走 HAL_UART_Transmit + HAL_MAX_DELAY）
  * 从每块 1 次降到每 256 块 1 次。
  *
- * 每块时间拆成两段测：sd（SD_ReadChunk / SD_WriteChunk 内部）+ gap（两次调用之间）。
- * 校验式 sd_avg + gap_avg ≈ 墙钟/块数，闭合了预算才算成立。
+ * 每块时间拆成两段测：sd（SD_ReadChunk / SD_WriteChunk 内部，**每块记一次**）+
+ * gap（两次 fops 调用之间，**每次调用记一次**）。
+ * ⚠ 2026-10-05 起 MSC_STREAM_PACKET=1024 让 blk_count 常为 2：cnt 数块、gap_n 数调用，
+ * 两者口径不同 —— closure 要按 (sd_avg*cnt + gap_sum)/cnt ≈ 墙钟/块数 验，
+ * **不要再写 sd_avg + gap_avg ≈ 墙钟/块数**（旧注释那句只在 blk_count 恒为 1 时成立）。
  * SD 段再靠 sd_spi.c 的轮询圈数计数器细分为 线上字节 / 卡忙 / CPU 轮询开销。
  */
 #define STAT_FLUSH_BLOCKS   256u
@@ -90,8 +94,9 @@ static void stat_add_gap(sd_stat_t *st, uint32_t cyc)
 }
 
 /* 每 256 块仍然只打一行（不增加打印次数，免得和 sysmon 撞 UART 被 HAL_BUSY 静默丢掉）。
- * sd=avg/min/max；gap=avg/min/max（同为每块：MSC_MEDIA_PACKET=512 使 blk_count 恒为 1，
- * 一次调用只带一块，故 gap_n == 块数）；poll_tag/polls=本窗口内的轮询圈数总数
+ * sd=avg/min/max（**每块**）；gap=avg/min/max（**每次 fops 调用**：MSC_MEDIA_PACKET=512 时代
+ * blk_count 恒为 1、一次调用只带一块，故旧注释写"同为每块"；2026-10-05 起 MSC_STREAM_PACKET=1024
+ * 使 blk_count 常为 2，gap_n ≈ 块数/2，**两个均值不可相加**）；poll_tag/polls=本窗口内的轮询圈数总数
  * （打总数不打平均，免得整数除法把 <1 的值吃掉）；bps=blk/sess。
  *
  * sessions != 0 时才打印 bps：它是判断 CMD18/CMD25 有没有真在流式工作的关键指标 ——
@@ -101,11 +106,14 @@ static void stat_report(const char *tag, sd_stat_t *st, uint32_t sessions,
                         const char *poll_tag, uint32_t polls)
 {
     uint32_t usp = SystemCoreClock / 1000000u;   /* 每微秒周期数 */
+    uint32_t db_rs = 0u;                         /* 自研双缓冲层：相位强复位次数 */
+    uint32_t db_an = 0u;                         /* 自研双缓冲层：异常计数（空包/无缓冲/伪 CTR） */
     if (usp == 0u) usp = 1u;
+    PMA_DB_GetCounters(NULL, NULL, &db_rs, &db_an);
 
     if (sessions != 0u)
     {
-        dbg_printf("[SD-%s] n=%lu sd=%lu/%lu/%luus gap=%lu/%lu/%luus %s=%lu bps=%lu tot=%lums\r\n",
+        dbg_printf("[SD-%s] n=%lu sd=%lu/%lu/%luus gap=%lu/%lu/%luus %s=%lu bps=%lu tot=%lums db=%lu/%lu\r\n",
                    tag,
                    (unsigned long)st->cnt,
                    (unsigned long)(st->sum / st->cnt / usp),
@@ -117,11 +125,13 @@ static void stat_report(const char *tag, sd_stat_t *st, uint32_t sessions,
                    poll_tag,
                    (unsigned long)polls,
                    (unsigned long)(st->cnt / sessions),
-                   (unsigned long)(st->sum / (SystemCoreClock / 1000u)));
+                   (unsigned long)(st->sum / (SystemCoreClock / 1000u)),
+                   (unsigned long)db_rs,
+                   (unsigned long)db_an);
     }
     else
     {
-        dbg_printf("[SD-%s] n=%lu sd=%lu/%lu/%luus gap=%lu/%lu/%luus %s=%lu tot=%lums\r\n",
+        dbg_printf("[SD-%s] n=%lu sd=%lu/%lu/%luus gap=%lu/%lu/%luus %s=%lu tot=%lums db=%lu/%lu\r\n",
                    tag,
                    (unsigned long)st->cnt,
                    (unsigned long)(st->sum / st->cnt / usp),
@@ -132,7 +142,9 @@ static void stat_report(const char *tag, sd_stat_t *st, uint32_t sessions,
                    (unsigned long)(st->gap_max / usp),
                    poll_tag,
                    (unsigned long)polls,
-                   (unsigned long)(st->sum / (SystemCoreClock / 1000u)));
+                   (unsigned long)(st->sum / (SystemCoreClock / 1000u)),
+                   (unsigned long)db_rs,
+                   (unsigned long)db_an);
     }
 
     st->cnt = 0u;

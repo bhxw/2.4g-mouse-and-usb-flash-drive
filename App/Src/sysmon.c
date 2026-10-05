@@ -1,7 +1,7 @@
 /**
  * @file sysmon.c
  * @brief M4 系统监控实现。
- *   - IWDG：~6s 溢出；空闲钩子 + 监控任务喂狗（配置 configUSE_IDLE_HOOK=1）
+ *   - IWDG：≈9.6s 溢出；空闲钩子 + 监控任务喂狗（配置 configUSE_IDLE_HOOK=1）
  *   - 监控任务：每秒计数；每 10s 打印 FreeRTOS 运行时间统计(CPU%)，每 20s 打印任务栈水位
  *   - RF 链路计数：收到/空闲 包数（供丢包评估）
  */

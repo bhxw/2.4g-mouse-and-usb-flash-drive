@@ -1956,9 +1956,10 @@ HAL_StatusTypeDef USB_EnableGlobalInt(USB_TypeDef *USBx)
   USBx->ISTR = 0U;
 
   /* Set winterruptmask variable */
+  /* 本工程不需要帧同步（HID 靠 1ms 轮询、MSC 靠 CBW 驱动）：USB_CNTR_SOFM 会每秒
+     产生 1000 次无意义中断；SOF 回调在 usbd_composite.c 里是 NULL。故不使能 SOFM/ESOFM。 */
   winterruptmask = USB_CNTR_CTRM  | USB_CNTR_WKUPM |
                    USB_CNTR_SUSPM | USB_CNTR_ERRM |
-                   USB_CNTR_SOFM | USB_CNTR_ESOFM |
                    USB_CNTR_RESETM;
 
   /* Set interrupt mask */

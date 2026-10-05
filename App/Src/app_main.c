@@ -7,7 +7,7 @@
 #include "app_main.h"
 #include "rtos_api.h"
 
-#include "nrf_demo.h"   /* MousePacket_t */
+#include "NRF_Demo.h"   /* MousePacket_t */
 #include "nrf24l01.h"
 #include "sd_log.h"
 #include "usb_device.h"
@@ -21,19 +21,18 @@ extern void scsi_msc_task_entry(void *param);
 
 #define RF_TASK_STACK_WORDS   160
 #define RF_TASK_PRIORITY      5
-#define RF_POLL_MS            10
+#define RF_POLL_MS            1
 
 #define SCSI_MSC_TASK_STACK_WORDS  256
 #define SCSI_MSC_TASK_PRIORITY     4
 
 static rtos_task_handle_t s_rf_task;
 
-/** 射频接收任务：10ms 轮询收包，收到即按 HID 鼠标报告上送并写入日志 */
+/** 射频接收任务：1ms 轮询收包（与 TX 的 1ms 发送周期对齐），收到即按 HID 鼠标报告上送并写入日志 */
 static void rf_rx_task(void *param)
 {
     MousePacket_t pack = {0};
     int8_t mouseout[4] = {0, 0, 0, 0};
-    uint32_t last_busy_print = 0;
 
     (void)param;
 
@@ -47,7 +46,6 @@ static void rf_rx_task(void *param)
             mouseout[2] = pack.y;
             mouseout[3] = 0;
             USBD_HID_SendReport(&hUsbDeviceFS, (uint8_t *)mouseout, 4);
-            (void)last_busy_print;
 
             sd_log_write_packet(&pack);
         }
@@ -73,7 +71,12 @@ void app_start(void)
                                &scsi_task);
     }
 
-    /* M2c：SD 日志任务（无卡时周期打印 mount fail 重试，不阻塞鼠标） */
+    /* M2c：SD 日志任务（无卡时周期打印 mount fail 重试，不阻塞鼠标）。
+     * ⚠ #17：usb_busy() 是**时间窗**锁（USB_GATE_MS=1500），主机一停顿 sd_log 就能拿到卡，
+     * 与 MSC 并发写同一张卡的 FAT，两个 FatFs 实例各带一份过期 FAT 视图互相覆盖。
+     * 2026-10-05 实测后果：MSC 写入被回 HARDWARE_ERROR/WRITE_FAULT（主机侧 disk Event 51/153）、
+     * 主机写下的目录项被旧值覆盖（10485760 → 14295040）、DATA.LOG 1591 条里 710 处 seq 断裂、
+     * 大文件写入掉到 46KB/s。做 MSC 数据路径验证/基准时先注掉本行（见开发日志 2026-10-05 第十二条）。 */
     sd_log_start();
 
     /* M4：系统监控任务（运行统计/栈水位/链路计数/喂狗） */

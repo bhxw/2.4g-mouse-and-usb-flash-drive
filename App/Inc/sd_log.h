@@ -1,7 +1,7 @@
 #ifndef __SD_LOG_H
 #define __SD_LOG_H
 
-#include "nrf_demo.h"   /* MousePacket_t */
+#include "NRF_Demo.h"   /* MousePacket_t */
 
 /**
  * @file sd_log.h

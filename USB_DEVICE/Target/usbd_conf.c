@@ -26,7 +26,7 @@
 #include "usbd_msc.h"
 
 /* USER CODE BEGIN Includes */
-
+#include "usbd_pma_db.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -80,7 +80,11 @@ void HAL_PCD_MspInit(PCD_HandleTypeDef* pcdHandle)
     HAL_NVIC_SetPriority(USB_LP_CAN1_RX0_IRQn, 5, 0);
     HAL_NVIC_EnableIRQ(USB_LP_CAN1_RX0_IRQn);
   /* USER CODE BEGIN USB_MspInit 1 */
-
+    /* 双缓冲 bulk IN 的 CTR_TX 走 HP 线（TeenyUSB 只在开 DB 时才
+     * NVIC_EnableIRQ(USB_HP_CAN1_TX_IRQn)，函数名就叫 enable_double_buffer_interrupt）。
+     * 两条线同优先级 ⇒ 共用一个中断体、互不抢占；本工程不用 CAN1_TX，无冲突。 */
+    HAL_NVIC_SetPriority(USB_HP_CAN1_TX_IRQn, 5, 0);
+    HAL_NVIC_EnableIRQ(USB_HP_CAN1_TX_IRQn);
   /* USER CODE END USB_MspInit 1 */
   }
 }
@@ -99,7 +103,7 @@ void HAL_PCD_MspDeInit(PCD_HandleTypeDef* pcdHandle)
     HAL_NVIC_DisableIRQ(USB_LP_CAN1_RX0_IRQn);
 
   /* USER CODE BEGIN USB_MspDeInit 1 */
-
+    HAL_NVIC_DisableIRQ(USB_HP_CAN1_TX_IRQn);
   /* USER CODE END USB_MspDeInit 1 */
   }
 }
@@ -181,6 +185,10 @@ void HAL_PCD_ResetCallback(PCD_HandleTypeDef *hpcd)
   }
     /* Set Speed. */
   USBD_LL_SetSpeed((USBD_HandleTypeDef*)hpcd->pData, speed);
+
+  /* 自研 DB 层：总线上复位后相位/进度全部作废，先关两端点，等主机重新
+   * SET_CONFIGURATION 走 OpenEP 再武装（OpenEP 会用 HAL 的 DB 分支重建 KIND/地址）。 */
+  PMA_DB_Reset();
 
   /* Reset Device. */
   USBD_LL_Reset((USBD_HandleTypeDef*)hpcd->pData);
@@ -328,17 +336,37 @@ USBD_StatusTypeDef USBD_LL_Init(USBD_HandleTypeDef *pdev)
   HAL_PCD_RegisterIsoOutIncpltCallback(&hpcd_USB_FS, PCD_ISOOUTIncompleteCallback);
   HAL_PCD_RegisterIsoInIncpltCallback(&hpcd_USB_FS, PCD_ISOINIncompleteCallback);
 #endif /* USE_HAL_PCD_REGISTER_CALLBACKS */
+  /* PMA 布局（2026-10-05 自研双缓冲版，64B 对齐、正好用满 512B）：
+   * 0x000 btable(64B) / 0x040 EP0 OUT / 0x080 EP0 IN / 0x0C0 EP1 IN(HID, 8B) /
+   * 0x100+0x140 EP2 OUT 两块 / 0x180+0x1C0 EP3 IN 两块。
+   * MSC 的 IN 必须占 EP3：F1 一个端点号只有一位 EP_KIND，双缓冲的两块把 btable
+   * 每端点的 4 个半字全用掉（BUF0=TX_ADDR/+2 槽，BUF1=RX_ADDR/+6 槽），
+   * 同一端点号不可能两个方向都开双缓冲。
+   * 2026-10-05 第三轮：HAL 的 USE_USB_DOUBLE_BUFFER 路径（第十二/十七条两轮实测）
+   * 对 MSC 两个方向都不可用，故改由自研层驱动（usbd_pma_db.c，蓝本 TeenyUSB）；
+   * MSC_DB_OUT / MSC_DB_IN 置 0 即该方向退回 HAL 单缓冲，地址不用改。 */
   /* USER CODE BEGIN EndPoint_Configuration */
-  HAL_PCDEx_PMAConfig((PCD_HandleTypeDef*)pdev->pData , 0x00 , PCD_SNG_BUF, 0x18);
-  HAL_PCDEx_PMAConfig((PCD_HandleTypeDef*)pdev->pData , 0x80 , PCD_SNG_BUF, 0x58);
+  HAL_PCDEx_PMAConfig((PCD_HandleTypeDef*)pdev->pData , 0x00 , PCD_SNG_BUF, 0x40);
+  HAL_PCDEx_PMAConfig((PCD_HandleTypeDef*)pdev->pData , 0x80 , PCD_SNG_BUF, 0x80);
   /* USER CODE END EndPoint_Configuration */
   /* USER CODE BEGIN EndPoint_Configuration_HID */
-  HAL_PCDEx_PMAConfig((PCD_HandleTypeDef*)pdev->pData , 0x81 , PCD_SNG_BUF, 0x98);
+  HAL_PCDEx_PMAConfig((PCD_HandleTypeDef*)pdev->pData , 0x81 , PCD_SNG_BUF, 0xC0);
   /* USER CODE END EndPoint_Configuration_HID */
   /* USER CODE BEGIN EndPoint_Configuration_MSC */
-  HAL_PCDEx_PMAConfig((PCD_HandleTypeDef*)pdev->pData , 0x02 , PCD_SNG_BUF, 0xA0);
-  HAL_PCDEx_PMAConfig((PCD_HandleTypeDef*)pdev->pData , 0x82 , PCD_SNG_BUF, 0xE0);
+#if (MSC_DB_OUT == 1)
+  HAL_PCDEx_PMAConfig((PCD_HandleTypeDef*)pdev->pData , 0x02 , PCD_DBL_BUF, 0x01400100);
+#else
+  HAL_PCDEx_PMAConfig((PCD_HandleTypeDef*)pdev->pData , 0x02 , PCD_SNG_BUF, 0x100);
+#endif
+#if (MSC_DB_IN == 1)
+  HAL_PCDEx_PMAConfig((PCD_HandleTypeDef*)pdev->pData , 0x83 , PCD_DBL_BUF, 0x01C00180);
+#else
+  HAL_PCDEx_PMAConfig((PCD_HandleTypeDef*)pdev->pData , 0x83 , PCD_SNG_BUF, 0x180);
+#endif
   /* USER CODE END EndPoint_Configuration_MSC */
+
+  PMA_DB_Init(&hpcd_USB_FS);
+
   return USBD_OK;
 }
 
@@ -407,6 +435,10 @@ USBD_StatusTypeDef USBD_LL_OpenEP(USBD_HandleTypeDef *pdev, uint8_t ep_addr, uin
   USBD_StatusTypeDef usb_status = USBD_OK;
 
   hal_status = HAL_PCD_EP_Open(pdev->pData, ep_addr, ep_mps, ep_type);
+
+  /* 自研 DB：HAL 的 ActivateEndpoint 已按 doublebuffer==1 建好 KIND/两块地址/清 DTOG，
+   * 本层再补 STAT_TX=VALID 与进度清零（它对 DB IN 置的是 NAK）。 */
+  PMA_DB_OpenEp(ep_addr);
 
   usb_status =  USBD_Get_USB_Status(hal_status);
 
@@ -536,7 +568,9 @@ USBD_StatusTypeDef USBD_LL_Transmit(USBD_HandleTypeDef *pdev, uint8_t ep_addr, u
   HAL_StatusTypeDef hal_status = HAL_OK;
   USBD_StatusTypeDef usb_status = USBD_OK;
 
-  hal_status = HAL_PCD_EP_Transmit(pdev->pData, ep_addr, pbuf, size);
+  hal_status = PMA_DB_IsDbEp(ep_addr) != 0U
+               ? PMA_DB_Transmit(ep_addr, pbuf, size)
+               : HAL_PCD_EP_Transmit(pdev->pData, ep_addr, pbuf, size);
 
   usb_status =  USBD_Get_USB_Status(hal_status);
 
@@ -556,7 +590,9 @@ USBD_StatusTypeDef USBD_LL_PrepareReceive(USBD_HandleTypeDef *pdev, uint8_t ep_a
   HAL_StatusTypeDef hal_status = HAL_OK;
   USBD_StatusTypeDef usb_status = USBD_OK;
 
-  hal_status = HAL_PCD_EP_Receive(pdev->pData, ep_addr, pbuf, size);
+  hal_status = PMA_DB_IsDbEp(ep_addr) != 0U
+               ? PMA_DB_PrepareReceive(ep_addr, pbuf, size)
+               : HAL_PCD_EP_Receive(pdev->pData, ep_addr, pbuf, size);
 
   usb_status =  USBD_Get_USB_Status(hal_status);
 

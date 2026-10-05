@@ -29,7 +29,7 @@
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
 #include "app_main.h"
-#include "nrf_demo.h"
+#include "NRF_Demo.h"
 #include "usb_storage.h"
 #include "nrf24l01.h"
 #include "console.h"
@@ -139,13 +139,13 @@ int main(void)
   /* 创建 SCSI 延迟处理信号队列（READ10/WRITE10 的 SD 操作在任务中执行） */
   usb_storage_msc_task_init();
 
-  MX_USB_DEVICE_Init();
-
+	MX_USB_DEVICE_Init();
+  
+	//USBD_Start(&hUsbDeviceFS);
   /* 启动 RTOS 应用任务（内部启动调度器，不返回） */
   dbg_printf("[BOOT] app-start\r\n");
   app_start();
   /* USER CODE END 2 */
-/* USER CODE END 2 */
 
   /* Infinite loop */
   /* USER CODE BEGIN WHILE */

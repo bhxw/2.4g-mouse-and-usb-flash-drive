@@ -62,10 +62,14 @@ static uint8_t             s_rd_pend_valid = 0;  /* s_buf[s_rd_pend_buf] holds a
 static uint8_t             s_rd_pend_buf   = 0;
 static uint8_t             s_rd_failed     = 0;  /* read-ahead failed; report at next signal */
 
+/* Each buffer holds MSC_STREAM_PACKET (1024B = 2 media packets) and comes from
+   the FreeRTOS heap, so the increase costs no linker RAM.  2x1024B out of a
+   10240B heap; the pair is still one per direction, since a command is never
+   both at once. */
 int scsi_msc_buffers_init(void)
 {
-    s_buf[0] = (uint8_t *)pvPortMalloc(MSC_MEDIA_PACKET);
-    s_buf[1] = (uint8_t *)pvPortMalloc(MSC_MEDIA_PACKET);
+    s_buf[0] = (uint8_t *)pvPortMalloc(MSC_STREAM_PACKET);
+    s_buf[1] = (uint8_t *)pvPortMalloc(MSC_STREAM_PACKET);
     return (s_buf[0] != NULL && s_buf[1] != NULL) ? 0 : -1;
 }
 
@@ -119,7 +123,7 @@ void scsi_msc_task_entry(void *param)
         USBD_MSC_BOT_HandleTypeDef *hmsc = usbd_msc_get_hmsc();
         USBD_HandleTypeDef         *pdev = usbd_msc_get_pdev();
         uint32_t len       = MIN(hmsc->scsi_blk_len * hmsc->scsi_blk_size,
-                                 MSC_MEDIA_PACKET);
+                                 MSC_STREAM_PACKET);
         uint16_t blk_count = (uint16_t)(len / hmsc->scsi_blk_size);
 
         if (sig.op == SCSI_MSC_OP_WRITE)
@@ -205,7 +209,7 @@ void scsi_msc_task_entry(void *param)
                    scsi_blk_addr has already been advanced past block N. */
                 uint8_t  nxt  = (uint8_t)(cur ^ 1U);
                 uint32_t nlen = MIN(hmsc->scsi_blk_len * hmsc->scsi_blk_size,
-                                    MSC_MEDIA_PACKET);
+                                    MSC_STREAM_PACKET);
                 uint16_t nblk = (uint16_t)(nlen / hmsc->scsi_blk_size);
 
                 if ((usbd_msc_get_fops())->Read(0, s_buf[nxt],
@@ -758,7 +762,7 @@ static int8_t SCSI_Write10(USBD_HandleTypeDef  *pdev, uint8_t lun, uint8_t *para
       return -1;
     }
 
-    len = MIN(len, MSC_MEDIA_PACKET);
+    len = MIN(len, MSC_STREAM_PACKET);
 
     /* Host data lands straight into s_buf[0] -- the task never copies it. */
     hmsc->bot_state = USBD_BOT_DATA_OUT;

@@ -28,6 +28,10 @@
 
 static rtos_queue_handle_t s_log_q;
 
+/* 队列满导致的丢弃计数：rf_rx 任务自增、sd_log 任务读并清零；
+ * volatile uint32_t 的对齐读写在 Cortex-M3 上是原子的，无需临界区。 */
+static volatile uint32_t s_q_drops;
+
 extern USBD_HandleTypeDef hUsbDeviceFS;
 
 static int usb_busy(void)
@@ -52,7 +56,10 @@ void sd_log_write_packet(const MousePacket_t *p)
     r.gx = p->gx;
     r.gy = p->gy;
     r.gz = p->gz;
-    (void)rtos_queue_send(s_log_q, &r, 0);   /* 队列满则丢弃 */
+    if (rtos_queue_send(s_log_q, &r, 0) != 0)
+    {
+        s_q_drops++;   /* 队列满则丢弃并计数（保持非阻塞语义） */
+    }
 }
 
 /* 落盘：成功返回 1；被 USB 占用返回 0 */
@@ -74,14 +81,17 @@ static int log_flush(FIL *file, uint8_t *fbuf, unsigned int *bcnt,
     }
     (void)f_sync(file);
     *bcnt = 0;
-    if (*drops > 0)
+    if (*drops > 0 || s_q_drops > 0)
     {
-        dbg_printf("[LOG] flushed rec=%lu dropped=%lu\r\n", *rec_total, *drops);
+        dbg_printf("[LOG] flushed rec=%lu dropped=%lu qdrop=%lu\r\n",
+                   *rec_total, *drops, (unsigned long)s_q_drops);
         *drops = 0;
+        s_q_drops = 0;
     }
     else
     {
-        dbg_printf("[LOG] flushed rec=%lu\r\n", *rec_total);
+        dbg_printf("[LOG] flushed rec=%lu qdrop=%lu\r\n",
+                   *rec_total, (unsigned long)s_q_drops);
     }
     return 1;
 }

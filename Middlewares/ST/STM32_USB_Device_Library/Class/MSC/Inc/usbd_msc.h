@@ -48,6 +48,17 @@ extern "C" {
 #define MSC_MEDIA_PACKET             512U
 #endif /* MSC_MEDIA_PACKET */
 
+/* Media bytes moved per USB transfer: two media packets.  Only the SCSI data
+ * pipeline uses this size, and its two ping-pong buffers come from the
+ * FreeRTOS heap (scsi_msc_buffers_init), so raising it costs no static RAM.
+ * bot_data[] below stays at MSC_MEDIA_PACKET: USBD_static_malloc() holds the
+ * whole MSC handle in a 1 KiB static block, and bot_data_length must never
+ * exceed sizeof(bot_data) (MSC_BOT_SendData() clamps only against
+ * cbw.dDataLength). */
+#ifndef MSC_STREAM_PACKET
+#define MSC_STREAM_PACKET            (2U * MSC_MEDIA_PACKET)
+#endif /* MSC_STREAM_PACKET */
+
 #define MSC_MAX_FS_PACKET            0x40U
 #define MSC_MAX_HS_PACKET            0x200U
 
@@ -56,7 +67,14 @@ extern "C" {
 #define USB_MSC_CONFIG_DESC_SIZ      32
 
 
-#define MSC_EPIN_ADDR                0x82U
+/* MSC 的 IN 端点号必须从 0x82 挪到 0x83：F1 一个端点号只有一位 EP_KIND，
+ * 而双缓冲把 btable 每端点的 4 个半字全用掉（BUF0=TX_ADDR/+2 槽、BUF1=RX_ADDR/+6 槽），
+ * 同一端点号不可能两个方向都开双缓冲。
+ * 2026-10-05 三轮对照（开发日志第十二/十七/十八条）：
+ *   ① HAL 的 USE_USB_DOUBLE_BUFFER 路径：两个方向都不可用（B 格 IN 读崩、C 格 OUT 写卡死）；
+ *   ② A 格（EP3 + 新 PMA 布局、两方向仍单缓冲）全绿 ⇒ 端点号/布局本身无罪；
+ *   ③ 现版本改由自研层 usbd_pma_db.c 驱动 EP2 OUT / EP3 IN 的双缓冲。 */
+#define MSC_EPIN_ADDR                0x83U
 #define MSC_EPOUT_ADDR               0x02U
 
 /**
