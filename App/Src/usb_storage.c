@@ -17,6 +17,19 @@
 /* 诊断：1=U盘不碰SD(固定容量/空读写)；0=真实SD */
 #define SD_BYPASS_TEST  0
 
+/* 第二层（散块）写路径，第 1 步 —— **实测否决，默认关**。
+ * 1 = 当前 CMD25 会话不连续、且本笔块数 <= MSC_WR_SINGLE_BLKS_MAX 时，逐块改走 CMD24 单块写；
+ * 0 = 原路径（每笔散块重开一个 CMD25 会话）。两条路径共用同一份 CS/总线原语。
+ * 2026-10-05 上板实测（40×8KB 小文件负载，A/B/A 三轮，见开发日志第十九条）：
+ *   0（原路径）        p50 = 56.1ms/文件，sd 均值 0.88~3.1ms/块，会话 close 3.8~7ms/次
+ *   阈值 1             p50 = 56.7ms/文件（无收益：主机元数据写多为 2 块，阈值 1 只覆盖少数笔）
+ *   阈值 2（覆盖元数据写）p50 = 391ms/文件（慢 7 倍），sd 均值 7.4ms/块、**min 3.0ms/块**
+ * 机制：CMD24 把"卡把多块写收尾"这段拖延成本从每次会话一次（已摊到 6~10 块）变成每块一次，
+ * 卡侧单块同步编程实测 ≥3.0ms/块。⇒ 绕过 CMD25 会话没有收益，只有回退。
+ * 代码留着只为记录"这条路试过"，不要在没有新证据时打开。 */
+#define MSC_WR_SINGLE_BLOCK     0
+#define MSC_WR_SINGLE_BLKS_MAX  2u  /* 仅在 MSC_WR_SINGLE_BLOCK=1 时有意义 */
+
 static volatile uint32_t s_last_active_ms = 0;
 static uint32_t s_cap_blocks = 0;
 static uint16_t s_cap_size = 0;
@@ -48,12 +61,24 @@ typedef struct
     uint32_t gap_n;   /* gap 样本数 */
     uint32_t gap_min; /* 周期数。gap 均值会被长空闲拉爆（见 stat_add_gap），稳态值要看 min */
     uint32_t gap_max; /* 周期数。逼近 59.6s 说明本窗口被空闲污染，均值不可用 */
+    /* gap 样本的粗分布：h[0]=<1ms h[1]=1~3ms h[2]=3~10ms h[3]=>=10ms。
+     * 光有 avg/min/max 判不出来：实测元数据窗 gap 均值 6282us 而 max=630332us，
+     * 均值是被**一条** 630ms 样本顶起来的，不是 128 笔 6.3ms 的主机节奏 —— 分布才看得出。 */
+    uint32_t gap_h[4];
 } sd_stat_t;
 
-static sd_stat_t s_rd_stat = {0, 0, 0xFFFFFFFFu, 0, 0, 0, 0xFFFFFFFFu, 0};
-static sd_stat_t s_wr_stat = {0, 0, 0xFFFFFFFFu, 0, 0, 0, 0xFFFFFFFFu, 0};
+static sd_stat_t s_rd_stat = {0, 0, 0xFFFFFFFFu, 0, 0, 0, 0xFFFFFFFFu, 0, {0, 0, 0, 0}};
+static sd_stat_t s_wr_stat = {0, 0, 0xFFFFFFFFu, 0, 0, 0, 0xFFFFFFFFu, 0, {0, 0, 0, 0}};
 static uint32_t  s_wr_sessions = 0;   /* 本窗口内 SD_WriteBegin 成功次数 */
 static uint32_t  s_rd_sessions = 0;   /* 本窗口内 SD_ReadBegin 成功次数 */
+
+/* 对向 fops 计数：一个方向的窗口行要知道"这期间另一个方向被调用了多少次、共花掉多少毫秒"。
+ * gap 样本只覆盖同向两次调用之间，跨向调用的整段耗时（含对向的会话终结 / 卡 busy）会整段
+ * 落进 gap；没有这个计数就分不清一条超长 gap 样本是"主机不说话"还是"对向调用在跑"。 */
+static uint32_t s_x_rd_n   = 0;
+static uint64_t s_x_rd_cyc = 0;
+static uint32_t s_x_wr_n   = 0;
+static uint64_t s_x_wr_cyc = 0;
 
 /* 块间间隔探针：这段窗口里 EP2 已经重新挂好 PrepareReceive（usbd_msc_scsi.c:105），
  * 设备随时可收，NAK 期算在 sd 那一段里面而不是 gap 里。所以 gap 是纯
@@ -87,33 +112,62 @@ static void stat_add(sd_stat_t *st, uint32_t cyc)
  * max 用来判断本窗口被污染了多少；max 逼近 59.6s 时应读作"≥59.6s，不可分辨"。 */
 static void stat_add_gap(sd_stat_t *st, uint32_t cyc)
 {
+    uint32_t per_ms = SystemCoreClock / 1000u;   /* 每毫秒周期数（72MHz -> 72000） */
+
     st->gap += cyc;
     st->gap_n++;
     if (cyc < st->gap_min) st->gap_min = cyc;
     if (cyc > st->gap_max) st->gap_max = cyc;
+
+    if (cyc < per_ms)              st->gap_h[0]++;
+    else if (cyc < 3u * per_ms)    st->gap_h[1]++;
+    else if (cyc < 10u * per_ms)   st->gap_h[2]++;
+    else                           st->gap_h[3]++;
 }
 
 /* 每 256 块仍然只打一行（不增加打印次数，免得和 sysmon 撞 UART 被 HAL_BUSY 静默丢掉）。
- * sd=avg/min/max（**每块**）；gap=avg/min/max（**每次 fops 调用**：MSC_MEDIA_PACKET=512 时代
- * blk_count 恒为 1、一次调用只带一块，故旧注释写"同为每块"；2026-10-05 起 MSC_STREAM_PACKET=1024
- * 使 blk_count 常为 2，gap_n ≈ 块数/2，**两个均值不可相加**）；poll_tag/polls=本窗口内的轮询圈数总数
- * （打总数不打平均，免得整数除法把 <1 的值吃掉）；bps=blk/sess。
- *
- * sessions != 0 时才打印 bps：它是判断 CMD18/CMD25 有没有真在流式工作的关键指标 ——
- * 接近 256 说明一个会话吃下了整个窗口；等于 1 说明每块都在重开会话，多块白做。
- * 整个字段消失则说明会话跨窗口一直开着（比 256 更好）。 */
+ * 字段口径：
+ *   n     本窗口块数；
+ *   sd    avg/min/max（**每块**）：覆盖 Chunk 尝试 + 会话重开（t0 取在 Chunk 之前，Begin 落在里面）；
+ *   gap   avg/min/max(样本数)（**每次 fops 调用**）：MSC_STREAM_PACKET=1024 使 blk_count 常为 2，
+ *         gap_n ≈ 块数/2，与 sd 的每块均值**不可相加**，闭合验算用 (sd_avg*cnt + gap_avg*gap_n)
+ *         ≈ 窗口墙钟。括号里是样本数 —— 均值离开样本数没有意义（见下）；
+ *   gh    gap 样本分布 <1ms / 1~3ms / 3~10ms / >=10ms：用来区分"很多笔正常间隔"与
+ *         "一条几百毫秒的停顿顶起均值"。实测元数据窗 gap 均值 6282us 而 max=630332us，
+ *         上一轮把均值读成"每笔间隔 6.3ms × 128 笔"就是被这一个样本带偏的；
+ *   x**   对向 fops：调用次数 / 总微秒（写行打 xrd，读行打 xwr）。gap 只覆盖同向两次调用之间，
+ *         跨向调用的整段耗时也落在 gap 里，没有这个数就分不清是"主机不说话"还是"对向在跑"；
+ *   sess  会话重开：Begin 次数 / close 累计us / open 累计us（close=STOP_TRAN/CMD12 + 卡 busy）；
+ *   poll_tag/polls  本窗口轮询圈数总数（打总数不打平均，免得整数除法把 <1 的值吃掉）；
+ *   bps=blk/sess。sessions=0 时整个字段不打印 —— 会话跨窗口一直开着，比"一窗 256"更好。 */
 static void stat_report(const char *tag, sd_stat_t *st, uint32_t sessions,
                         const char *poll_tag, uint32_t polls)
 {
     uint32_t usp = SystemCoreClock / 1000000u;   /* 每微秒周期数 */
     uint32_t db_rs = 0u;                         /* 自研双缓冲层：相位强复位次数 */
     uint32_t db_an = 0u;                         /* 自研双缓冲层：异常计数（空包/无缓冲/伪 CTR） */
+    uint8_t  is_wr = (uint8_t)(tag[0] == 'W');
+    sd_sess_stat_t sess = {0u, 0u, 0u};
+    uint32_t x_n   = is_wr ? s_x_rd_n : s_x_wr_n;
+    uint64_t x_cyc = is_wr ? s_x_rd_cyc : s_x_wr_cyc;
     if (usp == 0u) usp = 1u;
     PMA_DB_GetCounters(NULL, NULL, &db_rs, &db_an);
+    SD_TakeSessionStats(is_wr ? 0u : 1u, &sess);
+    if (is_wr)
+    {
+        s_x_rd_n = 0u;
+        s_x_rd_cyc = 0u;
+    }
+    else
+    {
+        s_x_wr_n = 0u;
+        s_x_wr_cyc = 0u;
+    }
 
     if (sessions != 0u)
     {
-        dbg_printf("[SD-%s] n=%lu sd=%lu/%lu/%luus gap=%lu/%lu/%luus %s=%lu bps=%lu tot=%lums db=%lu/%lu\r\n",
+        dbg_printf("[SD-%s] n=%lu sd=%lu/%lu/%luus gap=%lu/%lu/%luus(%lu) gh=%lu/%lu/%lu/%lu "
+                   "x%s=%lu/%luus sess=%lu/%lu/%luus %s=%lu bps=%lu db=%lu/%lu\r\n",
                    tag,
                    (unsigned long)st->cnt,
                    (unsigned long)(st->sum / st->cnt / usp),
@@ -122,16 +176,27 @@ static void stat_report(const char *tag, sd_stat_t *st, uint32_t sessions,
                    (unsigned long)(st->gap / st->gap_n / usp),
                    (unsigned long)(st->gap_min / usp),
                    (unsigned long)(st->gap_max / usp),
+                   (unsigned long)st->gap_n,
+                   (unsigned long)st->gap_h[0],
+                   (unsigned long)st->gap_h[1],
+                   (unsigned long)st->gap_h[2],
+                   (unsigned long)st->gap_h[3],
+                   is_wr ? "rd" : "wr",
+                   (unsigned long)x_n,
+                   (unsigned long)(x_cyc / usp),
+                   (unsigned long)sess.n,
+                   (unsigned long)(sess.close_cyc / usp),
+                   (unsigned long)(sess.open_cyc / usp),
                    poll_tag,
                    (unsigned long)polls,
                    (unsigned long)(st->cnt / sessions),
-                   (unsigned long)(st->sum / (SystemCoreClock / 1000u)),
                    (unsigned long)db_rs,
                    (unsigned long)db_an);
     }
     else
     {
-        dbg_printf("[SD-%s] n=%lu sd=%lu/%lu/%luus gap=%lu/%lu/%luus %s=%lu tot=%lums db=%lu/%lu\r\n",
+        dbg_printf("[SD-%s] n=%lu sd=%lu/%lu/%luus gap=%lu/%lu/%luus(%lu) gh=%lu/%lu/%lu/%lu "
+                   "x%s=%lu/%luus sess=%lu/%lu/%luus %s=%lu db=%lu/%lu\r\n",
                    tag,
                    (unsigned long)st->cnt,
                    (unsigned long)(st->sum / st->cnt / usp),
@@ -140,9 +205,19 @@ static void stat_report(const char *tag, sd_stat_t *st, uint32_t sessions,
                    (unsigned long)(st->gap / st->gap_n / usp),
                    (unsigned long)(st->gap_min / usp),
                    (unsigned long)(st->gap_max / usp),
+                   (unsigned long)st->gap_n,
+                   (unsigned long)st->gap_h[0],
+                   (unsigned long)st->gap_h[1],
+                   (unsigned long)st->gap_h[2],
+                   (unsigned long)st->gap_h[3],
+                   is_wr ? "rd" : "wr",
+                   (unsigned long)x_n,
+                   (unsigned long)(x_cyc / usp),
+                   (unsigned long)sess.n,
+                   (unsigned long)(sess.close_cyc / usp),
+                   (unsigned long)(sess.open_cyc / usp),
                    poll_tag,
                    (unsigned long)polls,
-                   (unsigned long)(st->sum / (SystemCoreClock / 1000u)),
                    (unsigned long)db_rs,
                    (unsigned long)db_an);
     }
@@ -155,6 +230,10 @@ static void stat_report(const char *tag, sd_stat_t *st, uint32_t sessions,
     st->gap_n = 0u;
     st->gap_min = 0xFFFFFFFFu;
     st->gap_max = 0u;
+    st->gap_h[0] = 0u;
+    st->gap_h[1] = 0u;
+    st->gap_h[2] = 0u;
+    st->gap_h[3] = 0u;
 }
 
 void usb_storage_ping(void)
@@ -355,6 +434,25 @@ static int8_t sd_storage_write(uint8_t lun, uint8_t *buf, uint32_t blk_addr, uin
          * sd_cs_low() 自动 STOP_TRAN 终结（sd_spi.c）。 */
         if (SD_WriteChunk(blk, p) != 0)
         {
+#if MSC_WR_SINGLE_BLOCK
+            /* 散块直通（第 1 步）：⚠ **实测否决、默认关** —— 依据见文件头 MSC_WR_SINGLE_BLOCK 的实测表。
+             * 打开后小文件负载 p50 从 56ms 掉到 391ms：CMD24 会让卡对每块做同步编程（≥3.0ms/块），
+             * 而 CMD25 会话收尾那段等待是**每会话一次**、且已摊到 6~10 块上。 */
+            if (blk_len <= MSC_WR_SINGLE_BLKS_MAX)
+            {
+                for (uint16_t k = i; k < blk_len; k++)
+                {
+                    uint32_t t1 = DWT->CYCCNT;
+
+                    if (SD_WriteBlock(blk_addr + k, buf + (uint32_t)k * SD_BLOCK_SIZE) != 0)
+                    {
+                        return -1;
+                    }
+                    stat_add(&s_wr_stat, DWT->CYCCNT - t1);
+                }
+                break;   /* 本笔剩下的块都已经按单块路径写完 */
+            }
+#endif
             if (SD_WriteBegin(blk) != 0)
             {
                 return -1;
@@ -379,6 +477,28 @@ static int8_t sd_storage_write(uint8_t lun, uint8_t *buf, uint32_t blk_addr, uin
 #endif
 }
 
+/* 对向 fops 计时包装：内容完全不变，只把整次调用（含所有提前 return 的失败路径）的墙钟
+ * 记进 s_x_*，供另一方向的窗口行打印。fops 表指向这两个包装，不指向实现本身。 */
+static int8_t sd_storage_read_timed(uint8_t lun, uint8_t *buf, uint32_t blk_addr, uint16_t blk_len)
+{
+    uint32_t t0 = DWT->CYCCNT;
+    int8_t r = sd_storage_read(lun, buf, blk_addr, blk_len);
+
+    s_x_rd_n++;
+    s_x_rd_cyc += DWT->CYCCNT - t0;
+    return r;
+}
+
+static int8_t sd_storage_write_timed(uint8_t lun, uint8_t *buf, uint32_t blk_addr, uint16_t blk_len)
+{
+    uint32_t t0 = DWT->CYCCNT;
+    int8_t r = sd_storage_write(lun, buf, blk_addr, blk_len);
+
+    s_x_wr_n++;
+    s_x_wr_cyc += DWT->CYCCNT - t0;
+    return r;
+}
+
 static int8_t sd_storage_get_max_lun(void)
 {
     return 0;   /* 单 LUN */
@@ -390,8 +510,8 @@ USBD_StorageTypeDef USBD_SD_Storage_fops =
     sd_storage_get_capacity,
     sd_storage_is_ready,
     sd_storage_is_write_protected,
-    sd_storage_read,
-    sd_storage_write,
+    sd_storage_read_timed,
+    sd_storage_write_timed,
     sd_storage_get_max_lun,
     (int8_t *)s_inquiry,
 };

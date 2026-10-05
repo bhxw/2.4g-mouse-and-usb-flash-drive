@@ -80,6 +80,11 @@ static uint32_t s_rd_next  = 0;     /* 会话期望的下一个块号（未做�
 static uint32_t s_poll_wait_ready = 0;  /* sd_wait_ready 圈数：卡写忙时间 */
 static uint32_t s_poll_token      = 0;  /* 0xFE 令牌等待圈数：卡读延迟 */
 
+/* 会话重开统计（纯测量，不影响功能）：close 在 sd_session_close() 里按"被终结的是读会话
+ * 还是写会话"分别归账，open 在 SD_ReadBegin/SD_WriteBegin 里累计。 */
+static sd_sess_stat_t s_sess_wr = {0, 0, 0};
+static sd_sess_stat_t s_sess_rd = {0, 0, 0};
+
 static void sd_session_close(void);
 
 /* ---------------- 底层原语 ---------------- */
@@ -274,9 +279,22 @@ static uint8_t sd_wait_ready(uint32_t timeout_ms)
 /* 结束多块会话：读会话发 CMD12，写会话发 STOP_TRAN，之后都等忙结束再释放 CS。
  * 写侧对应 Sd2Card::writeStop（参考历程/SD/utility/Sd2Card.cpp:633-644），
  * 读侧对应 FatFs disk_read 多扇区分支收尾的 send_cmd(CMD12)。
- * 未开启会话时为空操作，可被 sd_cs_low() 无条件调用。 */
+ * 未开启会话时为空操作，可被 sd_cs_low() 无条件调用。
+ *
+ * 整段耗时按方向归到 s_sess_rd/s_sess_wr 的 close_cyc。语义与原先的逐分支 return 等价，
+ * 只是把"到底有没有活干"提前判掉，好让计时只覆盖真做了事的那几次。 */
 static void sd_session_close(void)
 {
+    sd_sess_stat_t *st;
+    uint32_t t0;
+
+    if (!s_rd_open && !s_multi_open)
+    {
+        return;
+    }
+    st = s_rd_open ? &s_sess_rd : &s_sess_wr;
+    t0 = DWT->CYCCNT;
+
     if (s_rd_open)
     {
         s_rd_open = 0;
@@ -284,18 +302,17 @@ static void sd_session_close(void)
         (void)sd_cmd(SD_CMD12, 0, 0x01);
         (void)sd_wait_ready(SD_READ_TIMEOUT_MS);
         sd_cs_high();
-        return;
     }
-    if (!s_multi_open)
+    else
     {
-        return;
+        s_multi_open = 0;
+        (void)sd_wait_ready(SD_WRITE_TIMEOUT_MS);
+        (void)sd_xfer(SD_TOKEN_STOP_TRAN);
+        (void)sd_wait_ready(SD_WRITE_TIMEOUT_MS);
+        sd_cs_high();
     }
-    s_multi_open = 0;
 
-    (void)sd_wait_ready(SD_WRITE_TIMEOUT_MS);
-    (void)sd_xfer(SD_TOKEN_STOP_TRAN);
-    (void)sd_wait_ready(SD_WRITE_TIMEOUT_MS);
-    sd_cs_high();
+    st->close_cyc += DWT->CYCCNT - t0;
 }
 
 /* ---------------- 对外接口 ---------------- */
@@ -447,6 +464,19 @@ uint32_t SD_TakeTokenPolls(void)
     return n;
 }
 
+void SD_TakeSessionStats(uint8_t is_read, sd_sess_stat_t *st)
+{
+    sd_sess_stat_t *src = is_read ? &s_sess_rd : &s_sess_wr;
+
+    if (st != NULL)
+    {
+        *st = *src;
+    }
+    src->n = 0u;
+    src->close_cyc = 0u;
+    src->open_cyc = 0u;
+}
+
 uint8_t SD_ReadBlock(uint32_t block, uint8_t *buf)
 {
     uint32_t t0;
@@ -504,12 +534,16 @@ uint8_t SD_ReadBlock(uint32_t block, uint8_t *buf)
  */
 uint8_t SD_ReadBegin(uint32_t block)
 {
+    uint32_t t0;
     uint8_t r;
 
     /* sd_cs_low() 内部会先终结遗留会话（含 CMD25 写会话） */
     sd_cs_low();
 
+    s_sess_rd.n++;
+    t0 = DWT->CYCCNT;
     r = sd_cmd(SD_CMD18, s_hc ? block : (block << 9), 0x01);
+    s_sess_rd.open_cyc += DWT->CYCCNT - t0;
     if (r != SD_R1_READY)
     {
         sd_cs_high();
@@ -628,12 +662,16 @@ uint8_t SD_WriteBlock(uint32_t block, const uint8_t *buf)
  */
 uint8_t SD_WriteBegin(uint32_t block)
 {
+    uint32_t t0;
     uint8_t r;
 
     /* sd_cs_low() 内部会先终结遗留会话 */
     sd_cs_low();
 
+    s_sess_wr.n++;
+    t0 = DWT->CYCCNT;
     r = sd_cmd(SD_CMD25, s_hc ? block : (block << 9), 0x01);
+    s_sess_wr.open_cyc += DWT->CYCCNT - t0;
     if (r != SD_R1_READY)
     {
         sd_cs_high();

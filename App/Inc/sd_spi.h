@@ -60,4 +60,22 @@ uint8_t SD_Ready(void);
 uint32_t SD_TakeWaitReadyPolls(void);
 uint32_t SD_TakeTokenPolls(void);
 
+/** 会话重开统计（纯测量用，usb_storage.c 的 [SD-RD]/[SD-WR] 行取用） */
+typedef struct
+{
+    uint32_t n;         /* 本窗口内 Begin 调用次数（= 会话重开次数） */
+    uint32_t close_cyc; /* 终结上一会话累计周期数：STOP_TRAN/CMD12 + 卡 busy */
+    uint32_t open_cyc;  /* 新会话命令帧 + R1 等待累计周期数 */
+} sd_sess_stat_t;
+
+/**
+ * @brief 取走并清零会话重开统计（is_read=0 取写会话，非 0 取读会话）
+ *
+ * 会话重开本来混在 usb_storage.c 的 sd 段均值里（那颗 t0 取在 Chunk 之前，Begin 落在里面），
+ * 拆开是为了把两笔成本分开量：close = 上一笔的尾巴（含卡内部编程未结束时 sd_wait_ready 的
+ * busy），open = 卡对 CMD25/CMD18 的响应。两笔都是设备侧成本，与"主机下一笔命令的节奏"无关。
+ * close 只在 sd_session_close() 真有会话可终结时累计，n 数的是 Begin 次数，两者不一定相等。
+ */
+void SD_TakeSessionStats(uint8_t is_read, sd_sess_stat_t *st);
+
 #endif /* __SD_SPI_H */
