@@ -77,7 +77,7 @@ void app_start(void)
      * 2026-10-05 实测后果：MSC 写入被回 HARDWARE_ERROR/WRITE_FAULT（主机侧 disk Event 51/153）、
      * 主机写下的目录项被旧值覆盖（10485760 → 14295040）、DATA.LOG 1591 条里 710 处 seq 断裂、
      * 大文件写入掉到 46KB/s。做 MSC 数据路径验证/基准时先注掉本行（见开发日志 2026-10-05 第十二条）。 */
-    sd_log_start();
+    //sd_log_start();
 
     /* M4：系统监控任务（运行统计/栈水位/链路计数/喂狗） */
     sysmon_start();

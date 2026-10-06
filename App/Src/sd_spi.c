@@ -10,6 +10,7 @@
 
 #include "sd_spi.h"
 
+#include "console.h"   /* dbg_printf：仅 SD_LogInitDiag 用 */
 #include "main.h"
 #include "spi.h"       /* hspi1 */
 
@@ -50,6 +51,7 @@ extern SPI_HandleTypeDef hspi1;
 #define SD_CMD25  0x19
 #define SD_CMD55  0x37
 #define SD_CMD58  0x3A
+#define SD_CMD59  0x3B
 #define SD_ACMD41 0x29
 
 #define SD_R1_IDLE   0x01
@@ -86,6 +88,28 @@ static sd_sess_stat_t s_sess_wr = {0, 0, 0};
 static sd_sess_stat_t s_sess_rd = {0, 0, 0};
 
 static void sd_session_close(void);
+
+/* ---------------- 初始化诊断（仅本地调试用，不影响功能） ----------------
+ * 换卡后 SD_Init 反复失败时用它定位到具体一步。step/r1/v 全是卡的真应答，不是推断。
+ * 取用点两处：sd_log.c 的 [LOG] mount fail 与 usb_storage.c 的 [CAP] preinit fail。
+ */
+static sd_init_diag_t s_diag = {0};
+
+void SD_GetInitDiag(sd_init_diag_t *d)
+{
+    if (d != NULL)
+    {
+        *d = s_diag;
+    }
+}
+
+void SD_LogInitDiag(void)
+{
+    dbg_printf("[SDI] n=%lu step=%u r1=%02X v=%02X ocr=%02X c59=%02X\r\n",
+               (unsigned long)s_diag.n, (unsigned)s_diag.step,
+               (unsigned)s_diag.r1, (unsigned)s_diag.v, (unsigned)s_diag.ocr,
+               (unsigned)s_diag.c59);
+}
 
 /* ---------------- 底层原语 ---------------- */
 static void sd_cs_high(void)
@@ -219,20 +243,65 @@ static void sd_dummy_clocks(uint32_t n)
     }
 }
 
-/* 发送命令并等待 R1（跳过前导 0xFF）。返回 R1 或 0xFF（无响应） */
-static uint8_t sd_cmd(uint8_t cmd, uint32_t arg, uint8_t crc)
+/* CRC7（SD 命令 CRC）：生成多项式 x^7+x^3+1，对"命令+4 字节参数"做按位长除取 7 位余数，
+ * 线上发的字节 = (CRC7 << 1) | 1（末位固定 1）。
+ *
+ * 2026-10-06 实测结论：**这张 32G 卡对命令 CRC7 是严格检查的**，而原驱动只对 CMD0/CMD8
+ * 用真值（0x95/0x87），其余命令一律发哑元 0x01。1G 卡（合规卡，SPI 模式不查 CRC）因此
+ * 一路正常；32G 卡则在 CMD55 就回 R1=0x09（bit3=CRC 错误），ACMD41 根本发不出去，
+ * 初始化必然失败。所以这里改为每条命令都现算真值 —— 对合规卡是无害的（它们不查）。
+ * 校验：CMD0→0x95、CMD8→0x87，与 Sd2Card/FatFs 的固定表值一致。 */
+static uint8_t sd_crc7(const uint8_t *d5)
 {
+    uint8_t reg = 0;
+
+    for (uint8_t i = 0; i < 5; i++)
+    {
+        for (uint8_t b = 0x80u; b != 0u; b >>= 1)
+        {
+            reg = (uint8_t)(reg << 1);
+            if ((d5[i] & b) != 0u)
+            {
+                reg |= 1u;
+            }
+            if ((reg & 0x80u) != 0u)
+            {
+                reg ^= 0x89u;
+            }
+        }
+    }
+    for (uint8_t i = 0; i < 7; i++)   /* 补 7 个 0 完成除法 */
+    {
+        reg = (uint8_t)(reg << 1);
+        if ((reg & 0x80u) != 0u)
+        {
+            reg ^= 0x89u;
+        }
+    }
+    return (uint8_t)(((reg & 0x7Fu) << 1) | 1u);
+}
+
+/* 发送命令并等待 R1（跳过前导 0xFF）。返回 R1 或 0xFF（无响应）。
+ * CRC7 由 sd_crc7() 现算 —— 不能再用哑元，见其注释（有卡严格检查）。 */
+static uint8_t sd_cmd(uint8_t cmd, uint32_t arg)
+{
+    uint8_t frame[5];
     uint8_t i, r;
+
+    frame[0] = (uint8_t)(cmd | 0x40);
+    frame[1] = (uint8_t)(arg >> 24);
+    frame[2] = (uint8_t)(arg >> 16);
+    frame[3] = (uint8_t)(arg >> 8);
+    frame[4] = (uint8_t)arg;
 
     /* 前导时钟 */
     (void)sd_xfer(0xFF);
 
-    (void)sd_xfer(cmd | 0x40);
-    (void)sd_xfer((uint8_t)(arg >> 24));
-    (void)sd_xfer((uint8_t)(arg >> 16));
-    (void)sd_xfer((uint8_t)(arg >> 8));
-    (void)sd_xfer((uint8_t)arg);
-    (void)sd_xfer(crc);
+    for (i = 0; i < 5; i++)
+    {
+        (void)sd_xfer(frame[i]);
+    }
+    (void)sd_xfer(sd_crc7(frame));
 
     for (i = 0; i < 16; i++)
     {
@@ -245,14 +314,17 @@ static uint8_t sd_cmd(uint8_t cmd, uint32_t arg, uint8_t crc)
     return 0xFF;
 }
 
-/* CMD55 + 特定应用命令 */
+/* CMD55 + 特定应用命令（只有 SD_Init 用）。
+ * `r > 1` 只拦"应答带错误位"（例如 CRC 错误 0x09）；0x00/0x01 都放行给 ACMD。 */
 static uint8_t sd_acmd(uint8_t cmd, uint32_t arg)
 {
-    if (sd_cmd(SD_CMD55, 0, 0x01) > 1)
+    uint8_t r = sd_cmd(SD_CMD55, 0);
+
+    if (r > 1)
     {
         return 0xFF;
     }
-    return sd_cmd(cmd, arg, 0x01);
+    return sd_cmd(cmd, arg);
 }
 
 /* 等待卡忙结束（返回 0 表示不忙 / 超时返回 1）
@@ -299,7 +371,7 @@ static void sd_session_close(void)
     {
         s_rd_open = 0;
         /* CMD12 的应答是 R1b：sd_cmd 拿到 R1 后卡可能仍拉着 DO 表示忙 */
-        (void)sd_cmd(SD_CMD12, 0, 0x01);
+        (void)sd_cmd(SD_CMD12, 0);
         (void)sd_wait_ready(SD_READ_TIMEOUT_MS);
         sd_cs_high();
     }
@@ -326,6 +398,13 @@ uint8_t SD_Init(void)
     s_hc = 0;
     s_ready = 0;
 
+    s_diag.n++;
+    s_diag.step = 0;
+    s_diag.r1 = 0xFF;
+    s_diag.v = 0xFF;
+    s_diag.ocr = 0xFF;
+    s_diag.c59 = 0xFF;
+
     /* CS 引脚（PB12）推挽输出，默认高 */
     __HAL_RCC_GPIOB_CLK_ENABLE();
     gpio.Pin = SD_CS_PIN;
@@ -346,7 +425,7 @@ uint8_t SD_Init(void)
     retry = 0;
     do
     {
-        r = sd_cmd(SD_CMD0, 0, 0x95);      /* CMD0：进入 SPI 模式 */
+        r = sd_cmd(SD_CMD0, 0);            /* CMD0：进入 SPI 模式 */
         if (r == SD_R1_IDLE)
         {
             break;
@@ -358,25 +437,42 @@ uint8_t SD_Init(void)
         }
         sd_dummy_clocks(8);
     } while (++retry < 8);
+    s_diag.r1 = r;
     if (r != SD_R1_IDLE)
     {
+        s_diag.step = 2;
         sd_cs_high();
         return SD_ERR_CMD0;
     }
 
-    /* CMD8：识别 SD v2 */
-    r = sd_cmd(SD_CMD8, 0x000001AA, 0x87);
-    if (r == SD_R1_IDLE)
+    /* CMD8：识别 SD v2。
+     * 判据是 `r != 0x05`：合规 v2 卡回 0x01（进下面的 R7 校验），v1/MMC 卡回 0x05。
+     * 放宽的原因是实测某 32G 卡回的是 0x00，随后字节是 F0 00 01 AA —— 回显 0x1AA 是对的
+     * （说明参数被正确解析），但 R1 的 idle 位与 R7 首字节都不合规。原判据（只有 0x01）
+     * 会让这张卡永远停在 SD_ERR_CMD8；放宽只改"本该直接失败"的那种情况，合规卡行为不变。 */
+    r = sd_cmd(SD_CMD8, 0x000001AA);
+    s_diag.r1 = r;
+    if (r != 0x05)
     {
-        /* 读 R7 4 字节，仅校验低字节 0xAA */
-        for (uint8_t i = 0; i < 3; i++)
+        if (r == SD_R1_IDLE)
         {
-            (void)sd_xfer(0xFF);
+            /* 读 R7 4 字节，仅校验低字节 0xAA */
+            for (uint8_t i = 0; i < 3; i++)
+            {
+                (void)sd_xfer(0xFF);
+            }
+            s_diag.v = sd_xfer(0xFF);
+            if (s_diag.v != 0xAA)
+            {
+                s_diag.step = 3;
+                sd_cs_high();
+                return SD_ERR_CMD8;
+            }
         }
-        if (sd_xfer(0xFF) != 0xAA)
+        else
         {
-            sd_cs_high();
-            return SD_ERR_CMD8;
+            /* CMD8 应答不合规：跳过 R7 校验，按 SD v2 继续（理由见上面判据的说明） */
+            s_diag.v = 0xEE;   /* 标记：没读 R7 */
         }
         /* SD v2：ACMD41 带 HCS=1 */
         t0 = HAL_GetTick();
@@ -388,18 +484,24 @@ uint8_t SD_Init(void)
                 break;
             }
         } while ((HAL_GetTick() - t0) < 1000);
+        s_diag.r1 = r;
         if (r != SD_R1_READY)
         {
+            s_diag.step = 4;
             sd_cs_high();
             return SD_ERR_ACMD41;
         }
         /* CMD58 读 OCR：CCS 位判断 SDHC */
-        if (sd_cmd(SD_CMD58, 0, 0x01) != SD_R1_READY)
+        r = sd_cmd(SD_CMD58, 0);
+        s_diag.r1 = r;
+        if (r != SD_R1_READY)
         {
+            s_diag.step = 5;
             sd_cs_high();
             return SD_ERR_CMD58;
         }
         ocr = sd_xfer(0xFF);
+        s_diag.ocr = ocr;
         if ((ocr & 0xC0) == 0xC0)
         {
             s_hc = 1;
@@ -409,9 +511,10 @@ uint8_t SD_Init(void)
             (void)sd_xfer(0xFF);
         }
     }
-    else if (r == 0x05)
+    else
     {
-        /* SD v1 / MMC：不支持 CMD8，走普通 ACMD41 */
+        /* SD v1 / MMC：CMD8 报非法命令，走不带 HCS 的普通 ACMD41 */
+        s_diag.v = r;   /* 留下 CMD8 的 0x05，否则会被下面的 ACMD41 应答覆盖 */
         t0 = HAL_GetTick();
         do
         {
@@ -421,24 +524,29 @@ uint8_t SD_Init(void)
                 break;
             }
         } while ((HAL_GetTick() - t0) < 1000);
+        s_diag.r1 = r;
         if (r != SD_R1_READY)
         {
+            s_diag.step = 6;
             sd_cs_high();
             return SD_ERR_ACMD41;
         }
         s_hc = 0;
     }
-    else
-    {
-        sd_cs_high();
-        return SD_ERR_CMD8;
-    }
 
+    /* 关掉卡的 CRC 校验：CMD59 SET_CRC_ON_OFF 带 arg=0。
+     * 这张 32G 卡默认校验命令 CRC（见 sd_crc7 注释），而数据段 CRC16 本驱动发的是
+     * 0xFF 0xFF 哑元（512B 不软件算 CRC16，否则写吞吐会掉一大截）。命令 CRC 已由
+     * sd_crc7() 保证正确，这里再把卡的校验关掉，让它回到 SPI 模式合规卡的默认行为。
+     * 失败不致命，只记进 s_diag.c59 供 [SDI] 行观察。 */
+    s_diag.c59 = sd_cmd(SD_CMD59, 0);
     sd_cs_high();
 
     /* 切换到高速 */
     sd_spi_speed(SPI1_PRESC_HIGH);
     s_ready = 1;
+    dbg_printf("[SDI] ok hc=%u c59=%02X\r\n",
+               (unsigned)s_hc, (unsigned)s_diag.c59);
     return SD_ERR_NONE;
 }
 
@@ -488,7 +596,7 @@ uint8_t SD_ReadBlock(uint32_t block, uint8_t *buf)
     }
 
     sd_cs_low();
-    r = sd_cmd(SD_CMD17, block, 0x01);
+    r = sd_cmd(SD_CMD17, block);
     if (r != SD_R1_READY)
     {
         sd_cs_high();
@@ -542,7 +650,7 @@ uint8_t SD_ReadBegin(uint32_t block)
 
     s_sess_rd.n++;
     t0 = DWT->CYCCNT;
-    r = sd_cmd(SD_CMD18, s_hc ? block : (block << 9), 0x01);
+    r = sd_cmd(SD_CMD18, s_hc ? block : (block << 9));
     s_sess_rd.open_cyc += DWT->CYCCNT - t0;
     if (r != SD_R1_READY)
     {
@@ -614,7 +722,7 @@ uint8_t SD_WriteBlock(uint32_t block, const uint8_t *buf)
     }
 
     sd_cs_low();
-    r = sd_cmd(SD_CMD24, block, 0x01);
+    r = sd_cmd(SD_CMD24, block);
     if (r != SD_R1_READY)
     {
         sd_cs_high();
@@ -670,7 +778,7 @@ uint8_t SD_WriteBegin(uint32_t block)
 
     s_sess_wr.n++;
     t0 = DWT->CYCCNT;
-    r = sd_cmd(SD_CMD25, s_hc ? block : (block << 9), 0x01);
+    r = sd_cmd(SD_CMD25, s_hc ? block : (block << 9));
     s_sess_wr.open_cyc += DWT->CYCCNT - t0;
     if (r != SD_R1_READY)
     {
@@ -731,7 +839,7 @@ static uint8_t sd_read_csd(uint8_t csd[16])
     uint8_t b, r;
 
     sd_cs_low();
-    r = sd_cmd(SD_CMD9, 0, 0x01);
+    r = sd_cmd(SD_CMD9, 0);
     if (r != SD_R1_READY)
     {
         sd_cs_high();

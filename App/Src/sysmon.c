@@ -9,6 +9,7 @@
 
 #include "rtos_api.h"
 #include "console.h"
+#include "usb_storage.h"   /* msc_traffic_t：[MS] 入口流量行 */
 
 #include "main.h"
 #include "FreeRTOS.h"
@@ -117,6 +118,8 @@ static void mon_task(void *param)
     uint32_t last_cpu = 0;
     uint32_t last_stack = 0;
     uint32_t last_mem = 0;
+    uint32_t last_tr = 0;
+    msc_traffic_t tr_prev = {0};
 
     (void)param;
 
@@ -142,6 +145,30 @@ static void mon_task(void *param)
                        (unsigned)xPortGetMinimumEverFreeHeapSize(),
                        (unsigned)configTOTAL_HEAP_SIZE,
                        (unsigned long)dbg_console_drops());
+        }
+
+        /* MSC 入口流量：每 2s 一行（诊断，语义见 usb_storage.h 的 msc_traffic_t）。
+         * 现有 [SD-RD]/[SD-WR] 要累计成功满 256 块才打一行，主机在准备相或重试退避期间
+         * 一条都不出；这一行按"调用"计数、2 秒粒度，是唯一能把
+         * 「主机没发 / 主机发了但设备回错 / 设备真慢」分开的东西，同时充当 2s 心跳。
+         * 本任务优先级 1 < scsi_msc 的 4，抢不动它，不影响被测数据率。 */
+        if (sec - last_tr >= 2U)
+        {
+            msc_traffic_t tr;
+
+            last_tr = sec;
+            usb_storage_traffic(&tr);
+            dbg_printf("[MS] t=%lus rd c=%lu b=%lu f=%lu j=%lu | wr c=%lu b=%lu f=%lu j=%lu\r\n",
+                       (unsigned long)sec,
+                       (unsigned long)(tr.rd_calls  - tr_prev.rd_calls),
+                       (unsigned long)(tr.rd_blocks - tr_prev.rd_blocks),
+                       (unsigned long)(tr.rd_fails  - tr_prev.rd_fails),
+                       (unsigned long)(tr.rd_jumps  - tr_prev.rd_jumps),
+                       (unsigned long)(tr.wr_calls  - tr_prev.wr_calls),
+                       (unsigned long)(tr.wr_blocks - tr_prev.wr_blocks),
+                       (unsigned long)(tr.wr_fails  - tr_prev.wr_fails),
+                       (unsigned long)(tr.wr_jumps  - tr_prev.wr_jumps));
+            tr_prev = tr;
         }
 
         /*dbg_printf("[MON] up=%lus rx_ok=%lu rx_idle=%lu link_loss_ratio=%lu%%\r\n",

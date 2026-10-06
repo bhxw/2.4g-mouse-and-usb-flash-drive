@@ -78,4 +78,28 @@ typedef struct
  */
 void SD_TakeSessionStats(uint8_t is_read, sd_sess_stat_t *st);
 
+/**
+ * @brief SD_Init 失败点诊断（成功时 step=0）
+ *
+ * step 语义：2=CMD0 失败，3=CMD8 的 R7 校验字节不是 0xAA，4=ACMD41 失败（SD v2 分支），
+ * 5=CMD58 失败，6=ACMD41 失败（CMD8 回 0x05 的 v1/MMC 分支）。r1=0xFF = 卡在该步无应答。
+ * 用途：某张卡上 [LOG] mount fail fr=3 一直刷时，一眼看出卡停在哪一步、回了什么，
+ * 从而区分"卡不应答 / 卡回了错误码 / 文件系统层问题"。
+ */
+typedef struct
+{
+    uint32_t n;    /* 开机以来 SD_Init 调用次数 */
+    uint8_t  step; /* 最近一次失败停在哪一步，0 = 成功 */
+    uint8_t  r1;   /* 该步最后拿到的 R1 */
+    uint8_t  v;    /* CMD8 的 R7 校验字节；0xEE = 应答不合规、跳过了 R7 校验；
+                      0x05 = CMD8 报非法命令（v1/MMC 分支） */
+    uint8_t  ocr;  /* CMD58 读回的 OCR 首字节（bit7 上电完成、bit6 CCS） */
+    uint8_t  c59;  /* 初始化末尾 CMD59(CRC off) 的 R1，0xFF = 无应答 */
+} sd_init_diag_t;
+
+void SD_GetInitDiag(sd_init_diag_t *d);
+
+/** 打印一行 [SDI]（仅本地调试用） */
+void SD_LogInitDiag(void);
+
 #endif /* __SD_SPI_H */

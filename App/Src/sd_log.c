@@ -11,6 +11,7 @@
 #include "console.h"
 #include "ff.h"
 #include "log_format.h"
+#include "sd_spi.h"     /* SD_LogInitDiag：仅 mount fail 诊断用 */
 #include "usb_storage.h"
 #include "usbd_def.h"
 
@@ -140,6 +141,7 @@ static void log_task(void *param)
         if (fr != FR_OK)
         {
             dbg_printf("[LOG] mount fail fr=%d\r\n", (int)fr);
+            SD_LogInitDiag();
             rtos_delay(LOG_MOUNT_RETRY_MS);
             continue;
         }

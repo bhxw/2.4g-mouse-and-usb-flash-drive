@@ -35,6 +35,24 @@ static uint32_t s_cap_blocks = 0;
 static uint16_t s_cap_size = 0;
 static uint8_t  s_cap_ok = 0;
 
+/* ---------------- MSC 入口流量计数（诊断用，语义见 usb_storage.h 的 msc_traffic_t） ----------------
+ * 计数点在文件末尾的两个 `_timed` 包装里（fops 表指向它们），失败路径也必然进账 ——
+ * 这正是 `[SD-RD]`/`[SD-WR]` 的结构性盲区：那两处失败分支都在 stat_add 之前 return，
+ * 主机在重试退避期间串口一条都不出，与"主机没发"无法区分。
+ * 写方只有 scsi_msc 任务（读/写 fops 全在任务上下文），读方只有 sysmon（优先级更低）；
+ * 不清零，由 sysmon 存上一份快照算差值。 */
+static msc_traffic_t s_traffic;
+static uint32_t s_rd_last_end = 0xFFFFFFFFu;   /* 上次读的结尾块号；哨兵 = 还没有上一次 */
+static uint32_t s_wr_last_end = 0xFFFFFFFFu;
+
+void usb_storage_traffic(msc_traffic_t *t)
+{
+    if (t != NULL)
+    {
+        *t = s_traffic;
+    }
+}
+
 /* ---------------- 传输耗时统计（每 256 块汇总一次） ----------------
  * 用 DWT->CYCCNT（72MHz，14ns 分辨率）而非 HAL_GetTick()：
  * 单块耗时在毫秒以下时 1ms 量化会给出 0/1，误差 ±100%，不可用。
@@ -282,6 +300,7 @@ void usb_storage_preinit(void)
     else
     {
         dbg_printf("[CAP] preinit fail\r\n");
+        SD_LogInitDiag();
     }
 #else
     (void)0;
@@ -483,9 +502,24 @@ static int8_t sd_storage_read_timed(uint8_t lun, uint8_t *buf, uint32_t blk_addr
 {
     uint32_t t0 = DWT->CYCCNT;
     int8_t r = sd_storage_read(lun, buf, blk_addr, blk_len);
+    uint32_t tend = blk_addr + blk_len;
 
     s_x_rd_n++;
     s_x_rd_cyc += DWT->CYCCNT - t0;
+
+    /* MSC 入口流量（诊断）：整次调用无论成败都进账，见文件顶部的 s_traffic 说明。
+     * 放在计时之后，不污染 s_x_*。 */
+    s_traffic.rd_calls++;
+    s_traffic.rd_blocks += blk_len;
+    if (s_rd_last_end != 0xFFFFFFFFu && blk_addr != s_rd_last_end)
+    {
+        s_traffic.rd_jumps++;
+    }
+    s_rd_last_end = tend;
+    if (r != 0)
+    {
+        s_traffic.rd_fails++;
+    }
     return r;
 }
 
@@ -493,9 +527,22 @@ static int8_t sd_storage_write_timed(uint8_t lun, uint8_t *buf, uint32_t blk_add
 {
     uint32_t t0 = DWT->CYCCNT;
     int8_t r = sd_storage_write(lun, buf, blk_addr, blk_len);
+    uint32_t tend = blk_addr + blk_len;
 
     s_x_wr_n++;
     s_x_wr_cyc += DWT->CYCCNT - t0;
+
+    s_traffic.wr_calls++;
+    s_traffic.wr_blocks += blk_len;
+    if (s_wr_last_end != 0xFFFFFFFFu && blk_addr != s_wr_last_end)
+    {
+        s_traffic.wr_jumps++;
+    }
+    s_wr_last_end = tend;
+    if (r != 0)
+    {
+        s_traffic.wr_fails++;
+    }
     return r;
 }
 
