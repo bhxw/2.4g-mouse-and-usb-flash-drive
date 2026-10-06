@@ -535,11 +535,22 @@ uint8_t SD_Init(void)
     }
 
     /* 关掉卡的 CRC 校验：CMD59 SET_CRC_ON_OFF 带 arg=0。
-     * 这张 32G 卡默认校验命令 CRC（见 sd_crc7 注释），而数据段 CRC16 本驱动发的是
-     * 0xFF 0xFF 哑元（512B 不软件算 CRC16，否则写吞吐会掉一大截）。命令 CRC 已由
+     * 那张 32G 卡默认校验命令 CRC（见 sd_crc7 注释），而数据段 CRC16 本驱动发的是
+     * 0xFF 0xFF 哑元（512B 不软算 CRC16，否则写吞吐会掉一大截）。命令 CRC 已由
      * sd_crc7() 保证正确，这里再把卡的校验关掉，让它回到 SPI 模式合规卡的默认行为。
-     * 失败不致命，只记进 s_diag.c59 供 [SDI] 行观察。 */
+     * 失败不致命，只记进 s_diag.c59 供 [SDI] 行观察。
+     *
+     * ⚠ 暂时置 0（不发送）：1G 合规卡上出现"读正常、写不稳定"，而读写路径唯一的
+     * 不对称点就是数据段 CRC16 —— 写发 0xFF 0xFF 哑元、读把卡发的真值直接丢掉。
+     * 卡一旦开始校验写数据块的 CRC16，写必然被拒、读完全不受影响，正是这个形状。
+     * 批量之前驱动也发哑元而 1G 卡写得好，所以能"打开"这个校验的只有本条 CMD59。
+     * 置 0 后 [SDI] 行会打 c59=EE 作为标记；假设成立与否再定它的最终去留。 */
+#define SD_SEND_CMD59   0
+#if SD_SEND_CMD59
     s_diag.c59 = sd_cmd(SD_CMD59, 0);
+#else
+    s_diag.c59 = 0xEE;   /* 标记：本条未发送 */
+#endif
     sd_cs_high();
 
     /* 切换到高速 */
@@ -791,6 +802,29 @@ uint8_t SD_WriteBegin(uint32_t block)
     return SD_ERR_NONE;
 }
 
+/* ---------------- 写失败明细（诊断，只在失败时打印） ----------------
+ * 上限 8 行：主机重试时失败会连着来，不能让串口把 115200 堵死。
+ * res = 卡的数据应答字节：0x05=接受、0x0B=CRC 错（本驱动写数据段发的是 0xFF 0xFF 哑元
+ * CRC16）、0x0D=写错、0xFF=卡全程没吐令牌（只报忙）。
+ * err：1 = 应答非接受；2 = 写后忙不落。
+ * 用途：读正常、写不稳定时，这一行直接指出是"卡拒了数据块"还是"卡不应答"。 */
+static uint8_t s_wfail;
+
+static void wr_fail_report(uint32_t block, uint8_t res, uint8_t err)
+{
+    if (s_wfail < 8u)
+    {
+        s_wfail++;
+        dbg_printf("[SDW] lba=%lu res=%02X err=%u n=%u\r\n",
+                   (unsigned long)block, (unsigned)res, (unsigned)err, (unsigned)s_wfail);
+    }
+    else if (s_wfail == 8u)
+    {
+        s_wfail++;
+        dbg_printf("[SDW] more suppressed\r\n");
+    }
+}
+
 uint8_t SD_WriteChunk(uint32_t block, const uint8_t *buf)
 {
     uint8_t b;
@@ -813,12 +847,14 @@ uint8_t SD_WriteChunk(uint32_t block, const uint8_t *buf)
     b = sd_xfer(0xFF);
     if ((b & SD_DATA_RES_MASK) != SD_DATA_RES_ACCEPTED)
     {
+        wr_fail_report(block, b, 1u);
         sd_session_close();
         return SD_ERR_WRITE;
     }
 
     if (sd_wait_ready(SD_WRITE_TIMEOUT_MS))
     {
+        wr_fail_report(block, b, 2u);
         sd_session_close();
         return SD_ERR_TIMEOUT;
     }
