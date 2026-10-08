@@ -106,7 +106,14 @@ static void scsi_msc_signal_from_isr(uint8_t op)
         scsi_msc_sig_t sig;
         sig.op  = op;
         sig.buf = s_buf_idx;
-        (void)rtos_queue_send_from_isr(s_scsi_sig_q, &sig);
+        if (rtos_queue_send_from_isr(s_scsi_sig_q, &sig) == 0)
+        {
+            USBD_MSC_BotSig();      /* [BOT] 一次 OUT 完成入队 */
+        }
+        else
+        {
+            USBD_MSC_BotSigDrop();  /* [BOT] 队列满、完成信号被丢：任务会空等（1G 抓包 20s 那一类） */
+        }
     }
 }
 
@@ -130,11 +137,14 @@ void scsi_msc_task_entry(void *param)
         {
             uint8_t cur = sig.buf;                   /* buffer the ISR just filled */
             uint8_t nxt = (uint8_t)(cur ^ 1U);
+            uint8_t arm = (blk_count < hmsc->scsi_blk_len) ? 1u : 0u;
+
+            USBD_MSC_BotChunk(hmsc->scsi_blk_addr, blk_count, arm);   /* [BOT] 每 chunk 一笔 */
 
             /* Arm the next OUT before the blocking SD write -- but only when
                there is one.  On the last block MSC_BOT_SendCSW() below must be
                what re-arms EP OUT, and it re-arms it for the next CBW. */
-            if (blk_count < hmsc->scsi_blk_len)
+            if (arm != 0u)
             {
                 s_buf_idx = nxt;
                 USBD_LL_PrepareReceive(pdev, MSC_EPOUT_ADDR, s_buf[nxt], len);
@@ -758,6 +768,10 @@ static int8_t SCSI_Write10(USBD_HandleTypeDef  *pdev, uint8_t lun, uint8_t *para
     /* cases 3,11,13 : Hn,Ho <> D0 */
     if (hmsc->cbw.dDataLength != len)
     {
+      /* [BOT] 主机的 dDataLength 与设备算出的长度不符 = 记账错位；它会走到上面那条
+       * SCSI_ProcessCmd < 0 分支 → MSC_BOT_Abort() → STALL 双端点（8G 抓包里的死循环）。 */
+      USBD_MSC_BotBadWrite(hmsc->cbw.dDataLength, len);
+
       SCSI_SenseCode(pdev, hmsc->cbw.bLUN, ILLEGAL_REQUEST, INVALID_CDB);
       return -1;
     }

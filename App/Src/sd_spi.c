@@ -1150,6 +1150,23 @@ void SD_WriteSelfTest(void)
         dbg_printf("[CHKW] c25 verify crc=%04X %s\r\n", (unsigned)post,
                    (post == pre) ? "same" : "MISMATCH");
     }
+    /* ③ CMD18 流式读会话（MSC 读路径用的原语；此前自检只覆盖 CMD17/24/25）
+     * 背景：2026-10-08 抓包实测主机读 LBA0 被"瞬时拒绝"（CBW→CSW 仅 173µs、规范失败 CSW、
+     * 无 STALL），而自检里的 CMD17 单块读是好的 —— 两条路径只差在这条会话机制上。 */
+    r = SD_ReadBegin(blk);
+    if (r == 0u)
+    {
+        r = SD_ReadChunk(blk, s_chk_buf);
+    }
+    (void)SD_ReadEnd();
+    dbg_printf("[CHKW] c18 blk=%lu ret=%u\r\n", (unsigned long)blk, (unsigned)r);
+    if (r == 0u)
+    {
+        post = sd_crc16(s_chk_buf, SD_BLOCK_SIZE);
+        dbg_printf("[CHKW] c18 verify crc=%04X %s\r\n", (unsigned)post,
+                   (post == pre) ? "same" : "MISMATCH");
+    }
+
     dbg_printf("[CHKW] done wfail=%u\r\n", (unsigned)s_wfail);
 #endif
 }

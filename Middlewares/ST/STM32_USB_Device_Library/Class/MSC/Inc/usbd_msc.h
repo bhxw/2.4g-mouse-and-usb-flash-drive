@@ -125,6 +125,18 @@ USBD_MSC_BOT_HandleTypeDef;
 extern USBD_ClassTypeDef  USBD_MSC;
 #define USBD_MSC_CLASS    &USBD_MSC
 
+/* [BOT] 写路径事件计数（实现在 usbd_msc_bot.c）：ISR 里只记数，打印由 sysmon 任务每 2s
+ * 调 USBD_MSC_BotStatsDump() —— 在 ISR 里 dbg_printf 会阻塞 UART 顶住 USB 端点。 */
+void USBD_MSC_BotCbw(uint32_t tag, uint8_t cdb0, uint32_t dlen, uint16_t rx, uint32_t blk_len);
+void USBD_MSC_BotCsw(uint8_t status, uint32_t residue);
+void USBD_MSC_BotBadCbw(uint16_t rx, uint32_t sig, uint8_t cbllen);
+void USBD_MSC_BotBadWrite(uint32_t dlen, uint32_t blk_x512);
+void USBD_MSC_BotAbort(void);
+void USBD_MSC_BotSig(void);
+void USBD_MSC_BotSigDrop(void);
+void USBD_MSC_BotChunk(uint32_t addr, uint16_t n, uint8_t arm);
+void USBD_MSC_BotStatsDump(void);
+
 uint8_t  USBD_MSC_RegisterStorage(USBD_HandleTypeDef   *pdev,
                                   USBD_StorageTypeDef *fops);
 USBD_MSC_BOT_HandleTypeDef *usbd_msc_get_hmsc(void);

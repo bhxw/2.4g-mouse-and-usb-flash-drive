@@ -10,6 +10,7 @@
 #include "rtos_api.h"
 #include "console.h"
 #include "usb_storage.h"   /* msc_traffic_t：[MS] 入口流量行 */
+#include "usbd_msc.h"      /* USBD_MSC_BotStatsDump：[BOT] 写路径事件计数行 */
 
 #include "main.h"
 #include "FreeRTOS.h"
@@ -169,6 +170,9 @@ static void mon_task(void *param)
                        (unsigned long)(tr.wr_fails  - tr_prev.wr_fails),
                        (unsigned long)(tr.wr_jumps  - tr_prev.wr_jumps));
             tr_prev = tr;
+
+            /* [BOT] 写路径事件计数：2s 一行、只在这里打印（ISR 侧只记数）。判据见 usbd_msc_bot.c。 */
+            USBD_MSC_BotStatsDump();
         }
 
         /*dbg_printf("[MON] up=%lus rx_ok=%lu rx_idle=%lu link_loss_ratio=%lu%%\r\n",

@@ -28,6 +28,85 @@ EndBSPDependencies */
 #include "usbd_msc.h"
 #include "usbd_msc_scsi.h"
 #include "usbd_ioreq.h"
+#include "console.h"   /* dbg_printf：只在 USBD_MSC_BotStatsDump() 里用，由 sysmon 任务调用 */
+
+/* ---------------- [BOT] 写路径事件计数（诊断，2026-10-08 加） ----------------
+ * 目的：把"主机写为什么拿不到 CSW"钉到具体一步。判据都在 USBD_MSC_BotStatsDump() 那两行：
+ *   out  = cbw - csw   待 CSW 的命令数；持续 >1 = 有命令卡住没回 CSW（1G 抓包里 20s 空等那一类）
+ *   lost = arm - sig   arm 出去却没等到 OUT 完成的笔数；≠0 = 完成信号丢了
+ *   dr                 队列满导致丢弃的完成信号数；>0 = 直接丢完成（同上）
+ *   bad / badw         非法 CBW / WRITE10 长度校验失败 的次数；≠0 = BOT 记账错位（8G 抓包里的 STALL）
+ * ISR 里只记不打印：dbg_printf → HAL_UART_Transmit(HAL_MAX_DELAY) 会阻塞数十到近百毫秒，
+ * 在 ISR 里打印会顶住 USB 端点寄存器（2026-09-06 那条"ISR 阻塞 → bulk 超时 → SSTS 08"的成因）。
+ * 打印统一交给 sysmon 任务每 2s 调 USBD_MSC_BotStatsDump()。 */
+static struct
+{
+    uint32_t cbw, csw, bad, badw, abort_n, chunk, arm, sig, dr;
+    uint32_t l_tag, l_cdb, l_dlen, l_sig, l_res, l_chunk_addr;
+    uint16_t l_rx, l_blk_len, l_blk_cnt;
+    uint8_t  l_cs, l_cbllen;
+} s_bot;
+
+void USBD_MSC_BotCbw(uint32_t tag, uint8_t cdb0, uint32_t dlen, uint16_t rx, uint32_t blk_len)
+{
+    s_bot.cbw++;
+    s_bot.l_tag = tag;
+    s_bot.l_cdb = cdb0;
+    s_bot.l_dlen = dlen;
+    s_bot.l_rx = rx;
+    s_bot.l_blk_len = (uint16_t)blk_len;
+}
+
+void USBD_MSC_BotCsw(uint8_t status, uint32_t residue)
+{
+    s_bot.csw++;
+    s_bot.l_cs = status;
+    s_bot.l_res = residue;
+}
+
+void USBD_MSC_BotBadCbw(uint16_t rx, uint32_t sig, uint8_t cbllen)
+{
+    s_bot.bad++;
+    s_bot.l_rx = rx;
+    s_bot.l_sig = sig;
+    s_bot.l_cbllen = cbllen;
+}
+
+void USBD_MSC_BotBadWrite(uint32_t dlen, uint32_t blk_x512)
+{
+    s_bot.badw++;
+    s_bot.l_dlen = dlen;
+    s_bot.l_blk_len = (uint16_t)(blk_x512 / 512u);
+}
+
+void USBD_MSC_BotAbort(void)   { s_bot.abort_n++; }
+void USBD_MSC_BotSig(void)     { s_bot.sig++; }
+void USBD_MSC_BotSigDrop(void) { s_bot.dr++; }
+
+void USBD_MSC_BotChunk(uint32_t addr, uint16_t n, uint8_t arm)
+{
+    s_bot.chunk++;
+    s_bot.arm += (arm != 0u) ? 1u : 0u;
+    s_bot.l_chunk_addr = addr;
+    s_bot.l_blk_cnt = n;
+}
+
+void USBD_MSC_BotStatsDump(void)
+{
+    dbg_printf("[BOT] cbw=%lu csw=%lu out=%d | arm=%lu sig=%lu lost=%d dr=%lu | chunk=%lu ab=%lu bad=%lu badw=%lu\r\n",
+               (unsigned long)s_bot.cbw, (unsigned long)s_bot.csw,
+               (int)(s_bot.cbw - s_bot.csw),
+               (unsigned long)s_bot.arm, (unsigned long)s_bot.sig,
+               (int)(s_bot.arm - s_bot.sig), (unsigned long)s_bot.dr,
+               (unsigned long)s_bot.chunk, (unsigned long)s_bot.abort_n,
+               (unsigned long)s_bot.bad, (unsigned long)s_bot.badw);
+    dbg_printf("[BOT] last cdb=%02lX tag=%lu dlen=%lu rx=%u blklen=%u cbl=%u sig=%08lX cs=%u res=%lu\r\n",
+               (unsigned long)s_bot.l_cdb, (unsigned long)s_bot.l_tag,
+               (unsigned long)s_bot.l_dlen, (unsigned)s_bot.l_rx,
+               (unsigned)s_bot.l_blk_len, (unsigned)s_bot.l_cbllen,
+               (unsigned long)s_bot.l_sig, (unsigned)s_bot.l_cs,
+               (unsigned long)s_bot.l_res);
+}
 
 /** @addtogroup STM32_USB_DEVICE_LIBRARY
   * @{
@@ -222,15 +301,22 @@ void MSC_BOT_DataOut(USBD_HandleTypeDef  *pdev,
 static void  MSC_BOT_CBW_Decode(USBD_HandleTypeDef  *pdev)
 {
   USBD_MSC_BOT_HandleTypeDef  *hmsc = usbd_msc_get_hmsc();
+  uint16_t rx = (uint16_t)USBD_LL_GetRxDataSize(pdev, MSC_EPOUT_ADDR);
 
   hmsc->csw.dTag = hmsc->cbw.dTag;
   hmsc->csw.dDataResidue = hmsc->cbw.dDataLength;
 
-  if ((USBD_LL_GetRxDataSize(pdev, MSC_EPOUT_ADDR) != USBD_BOT_CBW_LENGTH) ||
+  /* [BOT] 记一笔 CBW：rx 是实际收到的字节数，正常恒为 31；≠31 即"收到的不是 CBW"= BOT 错位 */
+  USBD_MSC_BotCbw(hmsc->cbw.dTag, hmsc->cbw.CB[0], hmsc->cbw.dDataLength, rx,
+                  hmsc->scsi_blk_len);
+
+  if ((rx != USBD_BOT_CBW_LENGTH) ||
       (hmsc->cbw.dSignature != USBD_BOT_CBW_SIGNATURE) ||
       (hmsc->cbw.bLUN > 1U) ||
       (hmsc->cbw.bCBLength < 1U) || (hmsc->cbw.bCBLength > 16U))
   {
+    /* [BOT] 非法 CBW = 错位实锤：三个判据的原始值都留下 */
+    USBD_MSC_BotBadCbw(rx, hmsc->cbw.dSignature, hmsc->cbw.bCBLength);
 
     SCSI_SenseCode(pdev, hmsc->cbw.bLUN, ILLEGAL_REQUEST, INVALID_CDB);
 
@@ -311,6 +397,7 @@ void  MSC_BOT_SendCSW(USBD_HandleTypeDef  *pdev,
 
   hmsc->csw.dSignature = USBD_BOT_CSW_SIGNATURE;
   hmsc->csw.bStatus = CSW_Status;
+  USBD_MSC_BotCsw(CSW_Status, hmsc->csw.dDataResidue);   /* [BOT] 一笔 CSW 出去 */
   hmsc->bot_state = USBD_BOT_IDLE;
 
   USBD_LL_Transmit(pdev, MSC_EPIN_ADDR, (uint8_t *)(void *)&hmsc->csw,
@@ -331,6 +418,8 @@ void  MSC_BOT_SendCSW(USBD_HandleTypeDef  *pdev,
 static void  MSC_BOT_Abort(USBD_HandleTypeDef  *pdev)
 {
   USBD_MSC_BOT_HandleTypeDef  *hmsc = usbd_msc_get_hmsc();
+
+  USBD_MSC_BotAbort();   /* [BOT] 记一次 Abort：它会 STALL EP OUT+IN，主机随即 reset/clear-stall */
 
   if ((hmsc->cbw.bmFlags == 0U) &&
       (hmsc->cbw.dDataLength != 0U) &&

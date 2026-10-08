@@ -19,10 +19,10 @@
 /* 单向开关：置 0 即该方向退回 HAL 单缓冲。PMA 地址表不用改（两块用的就是同样的
  * 起始地址：OUT 0x100、IN 0x180），只是 SNG_BUF / DBL_BUF 的选择跟着变。 */
 #ifndef MSC_DB_OUT
-#define MSC_DB_OUT   1
+#define MSC_DB_OUT   0
 #endif
 #ifndef MSC_DB_IN
-#define MSC_DB_IN    1
+#define MSC_DB_IN    0
 #endif
 
 /* 双缓冲要求同一端点号只服务一个方向：F1 一个端点号只有一位 EP_KIND，

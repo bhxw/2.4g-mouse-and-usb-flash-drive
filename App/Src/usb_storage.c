@@ -368,6 +368,29 @@ static int8_t sd_storage_is_write_protected(uint8_t lun)
     return 0;
 }
 
+/* 读路径失败明细（诊断，只在失败时打印，上限 8 行）
+ * rd  = 首次 SD_ReadChunk 的返回码（非 0 = "会话不连续"这类拒绝；瞬时返回 = 根本没上 SPI）
+ * beg = SD_ReadBegin 的返回码（0 = 会话已重开；10 = SD_ERR_CMD18 = 卡的 CMD18 应答不对；8 = 超时）
+ * rd2 = 重开后的 SD_ReadChunk 返回码（0xFF = 没走到；6 = SD_ERR_READ；8 = SD_ERR_TIMEOUT = 等 0xFE 令牌超时）
+ * us  = 这一块尝试的耗时（µs，DWT@72MHz）：几微秒 ⇒ 纯软件拒绝；≈200000 ⇒ 令牌超时 200ms */
+static uint8_t s_rfail;
+
+static void rd_fail_report(uint32_t blk, uint8_t rd, uint8_t beg, uint8_t rd2, uint32_t us)
+{
+    if (s_rfail < 8u)
+    {
+        s_rfail++;
+        dbg_printf("[SDR] blk=%lu rd=%u beg=%u rd2=%u us=%lu n=%u\r\n",
+                   (unsigned long)blk, (unsigned)rd, (unsigned)beg, (unsigned)rd2,
+                   (unsigned long)us, (unsigned)s_rfail);
+    }
+    else if (s_rfail == 8u)
+    {
+        s_rfail++;
+        dbg_printf("[SDR] more suppressed\r\n");
+    }
+}
+
 static int8_t sd_storage_read(uint8_t lun, uint8_t *buf, uint32_t blk_addr, uint16_t blk_len)
 {
     uint32_t t_entry = DWT->CYCCNT;   /* 入口即取，gap 要含 storage_sd_ensure 的时间 */
@@ -397,15 +420,21 @@ static int8_t sd_storage_read(uint8_t lun, uint8_t *buf, uint32_t blk_addr, uint
          * 不连续（主机转去读 FAT/目录项）时 SD_ReadChunk 会拒绝，重开会话再试。
          * 会话不在这里 End：留给下一次 Chunk 继续，或由任何其它 SD 事务的
          * sd_cs_low() 自动发 CMD12 终结（sd_spi.c）。 */
-        if (SD_ReadChunk(blk, p) != 0)
+        uint8_t rd = SD_ReadChunk(blk, p);
+
+        if (rd != 0)
         {
-            if (SD_ReadBegin(blk) != 0)
+            uint8_t beg = SD_ReadBegin(blk);
+            uint8_t rd2 = 0xFFu;   /* 0xFF = 没走到重试 */
+
+            if (beg == 0u)
             {
-                return -1;
+                s_rd_sessions++;
+                rd2 = SD_ReadChunk(blk, p);
             }
-            s_rd_sessions++;
-            if (SD_ReadChunk(blk, p) != 0)
+            if (beg != 0u || rd2 != 0u)
             {
+                rd_fail_report(blk, rd, beg, rd2, (DWT->CYCCNT - t0) / 72u);
                 return -1;
             }
         }
