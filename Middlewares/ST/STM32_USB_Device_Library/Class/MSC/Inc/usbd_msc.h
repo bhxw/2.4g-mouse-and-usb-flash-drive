@@ -137,6 +137,10 @@ void USBD_MSC_BotSigDrop(void);
 void USBD_MSC_BotChunk(uint32_t addr, uint16_t n, uint8_t arm);
 void USBD_MSC_BotStatsDump(void);
 
+/* 失败但数据阶段没结清时的收尾：STALL EP OUT（作废残留数据）后回 CSW，不 re-arm CBW。
+ * 调用者保证 hmsc->csw.dDataResidue != 0。详见 usbd_msc_bot.c 的实现注释。 */
+void MSC_BOT_SendCSW_StallOut(USBD_HandleTypeDef *pdev);
+
 uint8_t  USBD_MSC_RegisterStorage(USBD_HandleTypeDef   *pdev,
                                   USBD_StorageTypeDef *fops);
 USBD_MSC_BOT_HandleTypeDef *usbd_msc_get_hmsc(void);

@@ -154,7 +154,17 @@ void scsi_msc_task_entry(void *param)
                                              hmsc->scsi_blk_addr, blk_count) < 0)
             {
                 SCSI_SenseCode(pdev, 0, HARDWARE_ERROR, WRITE_FAULT);
-                MSC_BOT_SendCSW(pdev, USBD_CSW_CMD_FAILED);
+                if (hmsc->csw.dDataResidue != 0U)
+                {
+                    /* 本次 CBW 还有字节没被消费（主机还在推数据）：必须 STALL 数据阶段，
+                     * 不能直接 re-arm 成下一个 CBW —— 否则残留数据被当成 CBW 吃进来，
+                     * 接着判非法 → Abort → STALL 风暴（2026-10-08 实测链条）。 */
+                    MSC_BOT_SendCSW_StallOut(pdev);
+                }
+                else
+                {
+                    MSC_BOT_SendCSW(pdev, USBD_CSW_CMD_FAILED);
+                }
                 continue;
             }
 

@@ -408,6 +408,35 @@ void  MSC_BOT_SendCSW(USBD_HandleTypeDef  *pdev,
                          USBD_BOT_CBW_LENGTH);
 }
 
+/* 失败收尾（数据阶段没结清时用）：STALL EP OUT 作废主机残留的数据，再回 CSW，
+ * 并且**刻意不**把 EP OUT 重新武装成下一个 CBW。
+ *
+ * 为什么必须这样（2026-10-08 上板实测链条，见 local/captures/r2_s.log）：
+ *   SD 层写失败 → 任务打 Sense + CSW(FAILED) → MSC_BOT_SendCSW() 立刻 re-arm CBW
+ *   → 主机此时还在推本次 CBW 的数据（BOT 顺序是 CBW→数据→CSW，主机不可能等 CSW 再发数据）
+ *   → 残留数据被当成 CBW 吃进来（实测 [BOT] last 行 rx=64 = 一个满 64 字节包，覆盖 31 字节的
+ *     cbw 结构、签名/长度全是垃圾）→ 判非法 CBW → MSC_BOT_Abort() STALL 双端点
+ *   → 主机 SYNC_RESET_PIPE_AND_CLEAR_STALL 风暴、卷被标记离线、写永远完不成、报 0x8007045D。
+ * 规范做法就是这里：数据阶段有未消费字节时 STALL 它，让主机走 BOT Reset + ClearFeature 重新同步。
+ * 调用者保证 hmsc->csw.dDataResidue != 0（本次 CBW 的 dDataLength 还有字节没被消费）。 */
+void MSC_BOT_SendCSW_StallOut(USBD_HandleTypeDef  *pdev)
+{
+  USBD_MSC_BOT_HandleTypeDef  *hmsc = usbd_msc_get_hmsc();
+
+  hmsc->csw.dSignature = USBD_BOT_CSW_SIGNATURE;
+  hmsc->csw.bStatus = USBD_CSW_CMD_FAILED;
+  USBD_MSC_BotCsw(USBD_CSW_CMD_FAILED, hmsc->csw.dDataResidue);   /* [BOT] 一笔 CSW 出去 */
+
+  hmsc->bot_status = USBD_BOT_STATUS_ERROR;   /* 让随后的 ClearFeature 走 ERROR 分支 */
+  hmsc->bot_state  = USBD_BOT_IDLE;
+
+  USBD_LL_StallEP(pdev, MSC_EPOUT_ADDR);      /* 作废残留数据：它不会再被当成 CBW */
+
+  USBD_LL_Transmit(pdev, MSC_EPIN_ADDR, (uint8_t *)(void *)&hmsc->csw,
+                   USBD_BOT_CSW_LENGTH);
+  /* 刻意不 PrepareReceive：等主机 BOT Reset（MSC_BOT_Reset）或 ClearFeature 重新武装 */
+}
+
 /**
 * @brief  MSC_BOT_Abort
 *         Abort the current transfer
