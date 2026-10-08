@@ -23,6 +23,7 @@
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
 #include "usbd_pma_db.h"
+#include "console.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -91,6 +92,34 @@ void NMI_Handler(void)
 void HardFault_Handler(void)
 {
   /* USER CODE BEGIN HardFault_IRQn 0 */
+  /* 故障定位（2026-10-08 加）：把异常栈帧里的 PC/LR 与 SCB 故障寄存器打出来。
+   * 打印走 USART1 轮询（console.c 的 dbg_printf → HAL_UART_Transmit），不依赖 RTOS/中断。
+   * 用途：主机一发起写就"整机静止"（控制台与 USB 一起死）这种形态只有故障现场能定性 ——
+   * 出现 [FAULT] 行 = 真硬故障（pc/lr 直接指向出错代码）；不出现 = 卡在某个死循环里。 */
+  {
+    uint32_t msp = __get_MSP();
+    uint32_t psp = __get_PSP();
+    uint32_t *f;
+
+    /* 异常帧里 pc 是第 7 个字（sp[6]）。帧在哪个栈上不确定（FreeRTOS 任务用 PSP、中断用 MSP），
+     * 这里两个都试，取 pc 落在 Flash 代码区（0x08000000~0x0801FFFF）的那个。
+     * 刻意不读 EXC_RETURN：本工程用的 armcc 不接受 GNU 风格内联 asm（__ASM volatile(...) 报 #18）。 */
+    f = (uint32_t *)psp;
+    if ((f[6] & 0xFFF80000u) != 0x08000000u)
+    {
+        f = (uint32_t *)msp;
+    }
+    dbg_printf("[FAULT] msp=%08lX psp=%08lX pick=%c\r\n",
+               (unsigned long)msp, (unsigned long)psp,
+               (f == (uint32_t *)psp) ? 'P' : 'M');
+    dbg_printf("[FAULT] r0=%08lX r1=%08lX r2=%08lX r3=%08lX r12=%08lX lr=%08lX pc=%08lX psr=%08lX\r\n",
+               (unsigned long)f[0], (unsigned long)f[1], (unsigned long)f[2],
+               (unsigned long)f[3], (unsigned long)f[4], (unsigned long)f[5],
+               (unsigned long)f[6], (unsigned long)f[7]);
+    dbg_printf("[FAULT] cfsr=%08lX hfsr=%08lX mmfar=%08lX bfar=%08lX\r\n",
+               (unsigned long)SCB->CFSR, (unsigned long)SCB->HFSR,
+               (unsigned long)SCB->MMFAR, (unsigned long)SCB->BFAR);
+  }
 
   /* USER CODE END HardFault_IRQn 0 */
   while (1)

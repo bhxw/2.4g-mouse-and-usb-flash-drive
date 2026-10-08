@@ -45,6 +45,9 @@ uint8_t SD_WriteEnd(void);
 /** 查询总扇区数（CSD 解析；SDHC 为块地址模式）。成功返回 0。 */
 uint8_t SD_GetBlockCount(uint32_t *blocks);
 
+/* 设备侧写自检（诊断用，交付前摘掉）：读末块 → 原样写回（CMD24 / CMD25 各一次）→ 读回比对 */
+void SD_WriteSelfTest(void);
+
 /** 已初始化成功？ */
 uint8_t SD_Ready(void);
 

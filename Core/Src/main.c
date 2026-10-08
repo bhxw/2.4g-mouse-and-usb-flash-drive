@@ -31,6 +31,7 @@
 #include "app_main.h"
 #include "NRF_Demo.h"
 #include "usb_storage.h"
+#include "sd_spi.h"
 #include "nrf24l01.h"
 #include "console.h"
 /* USER CODE END Includes */
@@ -103,26 +104,27 @@ int main(void)
   MX_SPI2_Init();
   MX_SPI1_Init();
   /* USER CODE BEGIN 2 */
-  /* 复位原因。必须在清除标志之前读。RCC->CSR 位定义（RM0008 表 20，位号→掩码）：
-   *   bit23  0x00800000  RMVF      写 1 清除下面全部标志
-   *   bit24  0x01000000  PORRSTF   上电/掉电复位（F1 的 BOR 也落在这一位）
-   *   bit25  0x02000000  PINRSTF   NRST 引脚复位
-   *   bit26  0x04000000  SFTRSTF   软件复位
-   *   bit27  0x08000000  IWDGRSTF  独立看门狗复位
-   *   bit28  0x10000000  WWDGRSTF  窗口看门狗复位
-   *   bit29  0x20000000  LPRSTF    低功耗复位
-   * 判读：正常上电 ≈ por=1 pin=1（CSR 0x03000000）；若反复出现 iwdg=1
-   * （CSR 0x0A000000）说明在跑看门狗复位循环——那 [MON] 永远到不了 sec=10，
-   * 而每 280ms 一条的 [SD-*] 照样能打，正好是现在这个症状。
-   * por=1 且反复出现则指向 USB 供电轨跌落。 */
+  /* 复位原因。必须在清除标志之前读。RCC->CSR 位定义（RM0008 §8.3.2，STM32F1 的布局）：
+   *   bit24  0x01000000  RMVF      写 1 清除下面全部标志
+   *   bit26  0x04000000  PINRSTF   NRST 引脚复位
+   *   bit27  0x08000000  PORRSTF   上电/掉电复位（F1 的 BOR 也落在这一位）
+   *   bit28  0x10000000  SFTRSTF   软件复位（调试器 Reset&Run 也置这一位）
+   *   bit29  0x20000000  IWDGRSTF  独立看门狗复位
+   *   bit30  0x40000000  WWDGRSTF  窗口看门狗复位
+   *   bit31  0x80000000  LPWRRSTF  低功耗复位
+   * ⚠ 2026-10-08 订正：原先这张表写的是 F2/F4 的位序（bit24 PORRSTF、bit25 PINRSTF…），
+   * 整体错位 2~3 位 —— 会把 IWDG 复位读成 lp、把 PIN 复位读成 sft。实测两处开机印证新表：
+   * 烧录后 CSR=0x14000000（PIN+SFT，调试器 Reset&Run）、拔插/按 RST 后 CSR=0x04000000（PIN）。
+   * 判读：正常上电 ≈ pin=1（常伴 por=1）；**反复出现 iwdg=1 才是看门狗复位循环**
+   * （那时 [MON] 永远到不了 sec=10）。 */
   {
     uint32_t csr = RCC->CSR;
 
     dbg_printf("[BOOT] rst CSR=%08lX por=%u pin=%u sft=%u iwdg=%u wwdg=%u lp=%u\r\n",
                (unsigned long)csr,
-               (unsigned)((csr >> 24) & 1U), (unsigned)((csr >> 25) & 1U),
-               (unsigned)((csr >> 26) & 1U), (unsigned)((csr >> 27) & 1U),
-               (unsigned)((csr >> 28) & 1U), (unsigned)((csr >> 29) & 1U));
+               (unsigned)((csr >> 27) & 1U), (unsigned)((csr >> 26) & 1U),
+               (unsigned)((csr >> 28) & 1U), (unsigned)((csr >> 29) & 1U),
+               (unsigned)((csr >> 30) & 1U), (unsigned)((csr >> 31) & 1U));
     __HAL_RCC_CLEAR_RESET_FLAGS();
   }
 
@@ -136,6 +138,8 @@ int main(void)
 
   /* SD 预初始化必须在 USB 启动前完成，否则主机枚举时 SD 尚未就绪 */
   usb_storage_preinit();
+  /* 设备侧 SD-SPI 写自检（诊断用，交付前摘掉）：不经主机/WRITE10 直接验证写接口 */
+  SD_WriteSelfTest();
   /* 创建 SCSI 延迟处理信号队列（READ10/WRITE10 的 SD 操作在任务中执行） */
   usb_storage_msc_task_init();
 

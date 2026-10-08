@@ -281,6 +281,81 @@ static uint8_t sd_crc7(const uint8_t *d5)
     return (uint8_t)(((reg & 0x7Fu) << 1) | 1u);
 }
 
+/* ---------------- 写数据段 CRC16（2026-10-08 换卡实测新增） ----------------
+ * 实测结论（`[SDW] win=FF FF 0B`，`local/captures/sd8_test.log`）：**这张 8G 卡在 SPI 模式下
+ * 开着写数据 CRC 校验** —— 数据段发哑元 0xFF 0xFF 时，卡收完 512B 后回的是数据应答令牌
+ * 0x0B（`0bxxx0sss1`，sss=101 = CRC 错误），于是每一块写都被拒。合规卡在 SPI 模式下默认
+ * 不校验（Sd2Card 与 FatFs 因此都发哑元），所以 1G 卡与既有历程从未暴露这一点；按位哑元
+ * 之外还必须先补令牌前的 Nwr（见 sd_wait_write_nwr），否则卡连令牌都收不到、根本不回应答。
+ *
+ * 这里按规范现算真值：CRC-16/CCITT（x^16+x^12+x^5+1、初值 0、MSB 优先），查表实现。
+ * 校验（Python 按位实现逐位对照：200 组随机 + 全 0 + 全 FF + 本项目图案，零不一致）：
+ * "123456789" → 0x31C3、512B 全 0xFF → 0x7FA1、512B 全 0 → 0x0000。
+ * 代价：表占 Flash 512B；512B 数据段约 2.5k 周期 ≈ **35µs/块（推算，72MHz）**，相比写块
+ * 实测 247µs/块约 +14%（第二十条里"按位 228µs/块"是未查表的算法）。置 0 退回哑元作对照。 */
+#define SD_WRITE_CRC16  1
+
+static const uint16_t s_crc16_tab[256] = {
+    0x0000u, 0x1021u, 0x2042u, 0x3063u, 0x4084u, 0x50A5u, 0x60C6u, 0x70E7u,
+    0x8108u, 0x9129u, 0xA14Au, 0xB16Bu, 0xC18Cu, 0xD1ADu, 0xE1CEu, 0xF1EFu,
+    0x1231u, 0x0210u, 0x3273u, 0x2252u, 0x52B5u, 0x4294u, 0x72F7u, 0x62D6u,
+    0x9339u, 0x8318u, 0xB37Bu, 0xA35Au, 0xD3BDu, 0xC39Cu, 0xF3FFu, 0xE3DEu,
+    0x2462u, 0x3443u, 0x0420u, 0x1401u, 0x64E6u, 0x74C7u, 0x44A4u, 0x5485u,
+    0xA56Au, 0xB54Bu, 0x8528u, 0x9509u, 0xE5EEu, 0xF5CFu, 0xC5ACu, 0xD58Du,
+    0x3653u, 0x2672u, 0x1611u, 0x0630u, 0x76D7u, 0x66F6u, 0x5695u, 0x46B4u,
+    0xB75Bu, 0xA77Au, 0x9719u, 0x8738u, 0xF7DFu, 0xE7FEu, 0xD79Du, 0xC7BCu,
+    0x48C4u, 0x58E5u, 0x6886u, 0x78A7u, 0x0840u, 0x1861u, 0x2802u, 0x3823u,
+    0xC9CCu, 0xD9EDu, 0xE98Eu, 0xF9AFu, 0x8948u, 0x9969u, 0xA90Au, 0xB92Bu,
+    0x5AF5u, 0x4AD4u, 0x7AB7u, 0x6A96u, 0x1A71u, 0x0A50u, 0x3A33u, 0x2A12u,
+    0xDBFDu, 0xCBDCu, 0xFBBFu, 0xEB9Eu, 0x9B79u, 0x8B58u, 0xBB3Bu, 0xAB1Au,
+    0x6CA6u, 0x7C87u, 0x4CE4u, 0x5CC5u, 0x2C22u, 0x3C03u, 0x0C60u, 0x1C41u,
+    0xEDAEu, 0xFD8Fu, 0xCDECu, 0xDDCDu, 0xAD2Au, 0xBD0Bu, 0x8D68u, 0x9D49u,
+    0x7E97u, 0x6EB6u, 0x5ED5u, 0x4EF4u, 0x3E13u, 0x2E32u, 0x1E51u, 0x0E70u,
+    0xFF9Fu, 0xEFBEu, 0xDFDDu, 0xCFFCu, 0xBF1Bu, 0xAF3Au, 0x9F59u, 0x8F78u,
+    0x9188u, 0x81A9u, 0xB1CAu, 0xA1EBu, 0xD10Cu, 0xC12Du, 0xF14Eu, 0xE16Fu,
+    0x1080u, 0x00A1u, 0x30C2u, 0x20E3u, 0x5004u, 0x4025u, 0x7046u, 0x6067u,
+    0x83B9u, 0x9398u, 0xA3FBu, 0xB3DAu, 0xC33Du, 0xD31Cu, 0xE37Fu, 0xF35Eu,
+    0x02B1u, 0x1290u, 0x22F3u, 0x32D2u, 0x4235u, 0x5214u, 0x6277u, 0x7256u,
+    0xB5EAu, 0xA5CBu, 0x95A8u, 0x8589u, 0xF56Eu, 0xE54Fu, 0xD52Cu, 0xC50Du,
+    0x34E2u, 0x24C3u, 0x14A0u, 0x0481u, 0x7466u, 0x6447u, 0x5424u, 0x4405u,
+    0xA7DBu, 0xB7FAu, 0x8799u, 0x97B8u, 0xE75Fu, 0xF77Eu, 0xC71Du, 0xD73Cu,
+    0x26D3u, 0x36F2u, 0x0691u, 0x16B0u, 0x6657u, 0x7676u, 0x4615u, 0x5634u,
+    0xD94Cu, 0xC96Du, 0xF90Eu, 0xE92Fu, 0x99C8u, 0x89E9u, 0xB98Au, 0xA9ABu,
+    0x5844u, 0x4865u, 0x7806u, 0x6827u, 0x18C0u, 0x08E1u, 0x3882u, 0x28A3u,
+    0xCB7Du, 0xDB5Cu, 0xEB3Fu, 0xFB1Eu, 0x8BF9u, 0x9BD8u, 0xABBBu, 0xBB9Au,
+    0x4A75u, 0x5A54u, 0x6A37u, 0x7A16u, 0x0AF1u, 0x1AD0u, 0x2AB3u, 0x3A92u,
+    0xFD2Eu, 0xED0Fu, 0xDD6Cu, 0xCD4Du, 0xBDAAu, 0xAD8Bu, 0x9DE8u, 0x8DC9u,
+    0x7C26u, 0x6C07u, 0x5C64u, 0x4C45u, 0x3CA2u, 0x2C83u, 0x1CE0u, 0x0CC1u,
+    0xEF1Fu, 0xFF3Eu, 0xCF5Du, 0xDF7Cu, 0xAF9Bu, 0xBFBAu, 0x8FD9u, 0x9FF8u,
+    0x6E17u, 0x7E36u, 0x4E55u, 0x5E74u, 0x2E93u, 0x3EB2u, 0x0ED1u, 0x1EF0u,
+};
+
+static uint16_t sd_crc16(const uint8_t *buf, uint32_t len)
+{
+    uint16_t crc = 0;
+
+    while (len-- != 0u)
+    {
+        crc = (uint16_t)((crc << 8) ^ s_crc16_tab[(uint8_t)((crc >> 8) ^ *buf)]);
+        buf++;
+    }
+    return crc;
+}
+
+/* 发数据段 CRC16 的两个字节（高字节在前），并**把这两个槽位的回读字节一并交给应答窗口** ——
+ * 卡的应答令牌可能就紧跟其后，这两个字节的回读值不能丢（见 sd_wait_data_res 的窗口说明）。 */
+static void sd_send_data_crc(const uint8_t *buf, uint8_t *crc_hi, uint8_t *crc_lo)
+{
+#if SD_WRITE_CRC16
+    uint16_t c = sd_crc16(buf, SD_BLOCK_SIZE);
+#else
+    uint16_t c = 0xFFFFu;   /* 哑元：SPI 模式默认不校验的合规卡也接受 */
+#endif
+
+    *crc_hi = sd_xfer((uint8_t)(c >> 8));
+    *crc_lo = sd_xfer((uint8_t)c);
+}
+
 /* 发送命令并等待 R1（跳过前导 0xFF）。返回 R1 或 0xFF（无响应）。
  * CRC7 由 sd_crc7() 现算 —— 不能再用哑元，见其注释（有卡严格检查）。 */
 static uint8_t sd_cmd(uint8_t cmd, uint32_t arg)
@@ -723,9 +798,87 @@ uint8_t SD_ReadEnd(void)
     return SD_ERR_NONE;
 }
 
+/* ---------------- 写侧补丁：令牌前的 Nwr + 应答窗口（2026-10-06 换卡实测新增） ----------------
+ * 两处都是"读得到、写不进"那条对称破口的补丁：
+ *   - 读路径本就是"轮询到 0xFE 为止"（超时 200ms），写路径原本只读一个字节且要求恰为 0x05；
+ *   - 写路径在 R1 之后立刻发令牌，而参考实现（Sd2Card::writeData 入口）先 waitNotBusy。
+ * 详见各自函数注释。 */
+
+static void wr_fail_report(uint32_t block, uint8_t res, uint8_t err);  /* 定义在本节之后 */
+
+/* 数据令牌前的 Nwr 等待：SD 物理层要求令牌与卡对写命令的 R1 应答之间至少隔 1 个字节，
+ * 且此刻卡不能仍处忙态（DO 低）。本驱动原先把忙等待只放在"每块之后"（见下面 CMD25 注释），
+ * 于是每个会话的第一块都是令牌紧跟 R1 —— 宽容的卡照收（1G 卡实测一路正常），严格的卡会丢
+ * 令牌：令牌被丢之后，卡把紧接着的 512 字节当作"等令牌"期间的数据，载荷里一旦出现
+ * 0xFC/0xFD 就被误认成起始令牌，应答令牌与忙信号因此都落在数据段内部发出 —— 主机侧只看
+ * 到"没有令牌 / 只有忙"，正是换卡实测的形态（[SDF] res=FF / datares=00）。
+ * sd_wait_ready 每转一圈 = 一个字节时间，卡不忙时它至少消耗 1 字节 = Nwr 下限。 */
+static uint8_t sd_wait_write_nwr(void)
+{
+    return sd_wait_ready(SD_WRITE_TIMEOUT_MS);
+}
+
+/* 数据应答令牌：bit0 恒为 1、bit4 恒为 0（0bxxx0sss1；0x05=接受、0x0B=CRC 错、0x0D=写错）。
+ * 判据必须是 (b & 0x11) == 0x01 —— "低 5 位 == 0x05" 会把卡拉忙时读到的 0x00 直接判死，
+ * "bit0 == 1" 又会把空闲电平 0xFF 误认成令牌。
+ *
+ * 窗口从**刚发出去的两个 CRC 槽位**开始：卡若被允许立即应答，令牌就落在那里（原实现把这两
+ * 个字节直接丢弃，于是"令牌其实来了、但看不到"）。扫描上限 SD_RES_SCAN 字节 —— 紧邻数据段
+ * 的 1~2 个槽位才是合规位置，扫得太远只是把"卡根本不给令牌"拖成每次失败的 600ms 阻塞。
+ * 窗口内始终没找到就返回最后读到的字节（0x00=卡只报忙 / 0xFF=空闲），交 [SDW] 行判读。 */
+#define SD_RES_WIN   8u
+#define SD_RES_SCAN  32u
+
+static uint8_t s_res_win[SD_RES_WIN];   /* 应答窗口前 8 字节，失败时打轨迹 */
+static uint8_t s_res_n;
+
+static uint8_t sd_wait_data_res(uint8_t crc_hi, uint8_t crc_lo)
+{
+    uint8_t b = crc_hi;
+    uint8_t n = 0;
+
+    s_res_n = 0;
+    s_res_win[s_res_n++] = crc_hi;
+    s_res_win[s_res_n++] = crc_lo;
+
+    for (;;)
+    {
+        if ((b & 0x11u) == 0x01u)
+        {
+            return b;
+        }
+        if (n++ >= SD_RES_SCAN)
+        {
+            return b;
+        }
+        b = sd_xfer(0xFF);
+        if (s_res_n < SD_RES_WIN)
+        {
+            s_res_win[s_res_n++] = b;
+        }
+    }
+}
+
+/* 应答窗口轨迹：把前 8 个字节按时间顺序打成一行，配合 [SDW] 判"卡是只报忙、还是没吐字节" */
+static void sd_res_trace_print(void)
+{
+    static const char hx[] = "0123456789ABCDEF";
+    char hex[(3u * SD_RES_WIN) + 1u];
+    uint8_t k = 0;
+
+    for (uint8_t i = 0; i < s_res_n; i++)
+    {
+        hex[k++] = hx[s_res_win[i] >> 4];
+        hex[k++] = hx[s_res_win[i] & 0x0Fu];
+        hex[k++] = ' ';
+    }
+    hex[k] = '\0';
+    dbg_printf("[SDW] win=%s\r\n", hex);
+}
+
 uint8_t SD_WriteBlock(uint32_t block, const uint8_t *buf)
 {
-    uint8_t r, b;
+    uint8_t r, b, crc_lo;
 
     if (!s_hc)
     {
@@ -740,19 +893,27 @@ uint8_t SD_WriteBlock(uint32_t block, const uint8_t *buf)
         return SD_ERR_WRITE;
     }
 
+    /* 令牌前的 Nwr：卡必须不忙且与 R1 至少隔 1 个字节（见 sd_wait_write_nwr） */
+    if (sd_wait_write_nwr())
+    {
+        wr_fail_report(block, 0xFF, 3u);
+        sd_cs_high();
+        return SD_ERR_TIMEOUT;
+    }
+
     (void)sd_xfer(0xFE);  /* 起始令牌 */
     if (sd_dma_xfer(buf, &s_dma_sink, 1u, 0u, (uint16_t)SD_BLOCK_SIZE) != SD_ERR_NONE)
     {
         sd_cs_high();
         return SD_ERR_TIMEOUT;
     }
-    (void)sd_xfer(0xFF);  /* CRC 高字节(忽略) */
-    (void)sd_xfer(0xFF);  /* CRC 低字节(忽略) */
+    sd_send_data_crc(buf, &b, &crc_lo);   /* 真 CRC16 的两个字节；回读值进应答窗口 */
+    b = sd_wait_data_res(b, crc_lo);
 
-    /* 数据应答：低 5 位应为 0x05 */
-    b = sd_xfer(0xFF);
-    if ((b & 0x1F) != 0x05)
+    if ((b & SD_DATA_RES_MASK) != SD_DATA_RES_ACCEPTED)
     {
+        wr_fail_report(block, b, 1u);
+        sd_res_trace_print();
         sd_cs_high();
         return SD_ERR_WRITE;
     }
@@ -760,6 +921,7 @@ uint8_t SD_WriteBlock(uint32_t block, const uint8_t *buf)
     /* 等待编程完成（忙低电平结束） */
     if (sd_wait_ready(500))
     {
+        wr_fail_report(block, b, 2u);
         sd_cs_high();
         return SD_ERR_TIMEOUT;
     }
@@ -804,10 +966,12 @@ uint8_t SD_WriteBegin(uint32_t block)
 
 /* ---------------- 写失败明细（诊断，只在失败时打印） ----------------
  * 上限 8 行：主机重试时失败会连着来，不能让串口把 115200 堵死。
- * res = 卡的数据应答字节：0x05=接受、0x0B=CRC 错（本驱动写数据段发的是 0xFF 0xFF 哑元
- * CRC16）、0x0D=写错、0xFF=卡全程没吐令牌（只报忙）。
- * err：1 = 应答非接受；2 = 写后忙不落。
- * 用途：读正常、写不稳定时，这一行直接指出是"卡拒了数据块"还是"卡不应答"。 */
+ * res = 卡的数据应答字节：0x05=接受、0x0B=CRC 错（写数据段的 CRC16 由 sd_crc16() 现算，
+ * 2026-10-08 实测本卡的 0x0B 就是它；再出现说明数据段本身或时序有问题）、
+ * 0x0D=写错、0x00=卡只报忙（未吐令牌）、0xFF=空闲（未吐令牌）。
+ * err：1 = 应答非接受；2 = 写后忙不落；3 = 令牌前卡一直忙（Nwr 等待超时）。
+ * 用途：读正常、写不稳定时，这一行直接指出是"卡拒了数据块"还是"卡不应答"；
+ * 紧邻的 [SDW] win= 行是应答窗口前 8 个字节的时序轨迹（含刚发的两个 CRC 槽位）。 */
 static uint8_t s_wfail;
 
 static void wr_fail_report(uint32_t block, uint8_t res, uint8_t err)
@@ -827,11 +991,19 @@ static void wr_fail_report(uint32_t block, uint8_t res, uint8_t err)
 
 uint8_t SD_WriteChunk(uint32_t block, const uint8_t *buf)
 {
-    uint8_t b;
+    uint8_t b, crc_hi, crc_lo;
 
     if (!s_multi_open || block != s_multi_next)
     {
         return SD_ERR_WRITE;
+    }
+
+    /* 令牌前的 Nwr：会话第一块此前完全没等过（见 sd_wait_write_nwr） */
+    if (sd_wait_write_nwr())
+    {
+        wr_fail_report(block, 0xFF, 3u);
+        sd_session_close();
+        return SD_ERR_TIMEOUT;
     }
 
     (void)sd_xfer(SD_TOKEN_WRITE_MULTI);
@@ -841,13 +1013,13 @@ uint8_t SD_WriteChunk(uint32_t block, const uint8_t *buf)
         sd_session_close();
         return SD_ERR_TIMEOUT;
     }
-    (void)sd_xfer(0xFF);  /* CRC 高字节(SPI 模式默认关闭 CRC) */
-    (void)sd_xfer(0xFF);  /* CRC 低字节 */
+    sd_send_data_crc(buf, &crc_hi, &crc_lo);   /* 真 CRC16 的两个字节；回读值进应答窗口 */
 
-    b = sd_xfer(0xFF);
+    b = sd_wait_data_res(crc_hi, crc_lo);
     if ((b & SD_DATA_RES_MASK) != SD_DATA_RES_ACCEPTED)
     {
         wr_fail_report(block, b, 1u);
+        sd_res_trace_print();
         sd_session_close();
         return SD_ERR_WRITE;
     }
@@ -903,6 +1075,83 @@ static uint8_t sd_read_csd(uint8_t csd[16])
     (void)sd_xfer(0xFF);
     sd_cs_high();
     return SD_ERR_NONE;
+}
+
+/* ---------------- 设备侧写自检（诊断用，交付前摘掉） ----------------
+ * 为什么需要它：主机侧写要穿过 WRITE10 → MSC → BOT 一整条链，任何一段出问题都只表现为
+ * "写不进"，没法把 SD-SPI 写本身单独判定。这里在开机时直接调 SD-SPI 的写接口：
+ *   ① 读卡**最后一块** → 记 CRC16 → **原样写回**（CMD24）→ 读回 → CRC 比对；
+ *   ② 同一块再走 CMD25 会话（Begin/Chunk/End，MSC 路径用的原语）重复一遍。
+ * 用 sd_crc16() 比对而不保存整块（省 512B RAM），只占一个 512B 工作缓冲。
+ * 写失败时前面会有 `[SDW]` 行给出应答字节与 `win=` 轨迹，那才是判据。
+ * 选最后一块因为它最不可能属于任何文件；内容与读到的完全相同，路径正常时非破坏性。 */
+#define SD_SELFTEST_WRITE  1
+
+static uint8_t s_chk_buf[SD_BLOCK_SIZE];
+
+void SD_WriteSelfTest(void)
+{
+#if SD_SELFTEST_WRITE
+    uint32_t blocks = 0;
+    uint32_t blk;
+    uint16_t pre, post;
+    uint8_t r;
+
+    if (SD_GetBlockCount(&blocks) != 0 || blocks == 0u)
+    {
+        dbg_printf("[CHKW] no block count\r\n");
+        return;
+    }
+    blk = blocks - 1u;
+
+    /* ① CMD24 单块写（FatFs 走的就是这条） */
+    if (SD_ReadBlock(blk, s_chk_buf) != 0)
+    {
+        dbg_printf("[CHKW] c24 blk=%lu pre-read fail\r\n", (unsigned long)blk);
+        return;
+    }
+    pre = sd_crc16(s_chk_buf, SD_BLOCK_SIZE);
+    r = SD_WriteBlock(blk, s_chk_buf);
+    dbg_printf("[CHKW] c24 blk=%lu crc=%04X ret=%u\r\n",
+               (unsigned long)blk, (unsigned)pre, (unsigned)r);
+    if (SD_ReadBlock(blk, s_chk_buf) != 0)
+    {
+        dbg_printf("[CHKW] c24 post-read fail\r\n");
+    }
+    else
+    {
+        post = sd_crc16(s_chk_buf, SD_BLOCK_SIZE);
+        dbg_printf("[CHKW] c24 verify crc=%04X %s\r\n", (unsigned)post,
+                   (post == pre) ? "same" : "MISMATCH");
+    }
+
+    /* ② CMD25 会话写（U 盘路径用的原语） */
+    if (SD_ReadBlock(blk, s_chk_buf) != 0)
+    {
+        dbg_printf("[CHKW] c25 pre-read fail\r\n");
+        return;
+    }
+    pre = sd_crc16(s_chk_buf, SD_BLOCK_SIZE);
+    r = SD_WriteBegin(blk);
+    if (r == 0u)
+    {
+        r = SD_WriteChunk(blk, s_chk_buf);
+    }
+    (void)SD_WriteEnd();
+    dbg_printf("[CHKW] c25 blk=%lu crc=%04X ret=%u\r\n",
+               (unsigned long)blk, (unsigned)pre, (unsigned)r);
+    if (SD_ReadBlock(blk, s_chk_buf) != 0)
+    {
+        dbg_printf("[CHKW] c25 post-read fail\r\n");
+    }
+    else
+    {
+        post = sd_crc16(s_chk_buf, SD_BLOCK_SIZE);
+        dbg_printf("[CHKW] c25 verify crc=%04X %s\r\n", (unsigned)post,
+                   (post == pre) ? "same" : "MISMATCH");
+    }
+    dbg_printf("[CHKW] done wfail=%u\r\n", (unsigned)s_wfail);
+#endif
 }
 
 uint8_t SD_GetBlockCount(uint32_t *blocks)
